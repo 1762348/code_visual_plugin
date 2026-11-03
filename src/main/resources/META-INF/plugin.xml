@@ -1,0 +1,16 @@
+<idea-plugin>
+    <id>org.example.code_visual_plugin</id>
+    <name>CodeVisualPlugin</name>
+    <version>1.0</version>
+    <vendor>org.example</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="MyToolWindow"
+                    factoryClass="org.example.code_visual_plugin.MyToolWindowFactory"
+                    anchor="right"/>
+    </extensions>
+
+</idea-plugin>

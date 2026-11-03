@@ -1,0 +1,1 @@
+rootProject.name = "code_visual_plugin"
