@@ -16,16 +16,22 @@
           :disabled="aiStatus.phase === 'running' || !aiStatus.configured"
           :title="aiStatus.configured
             ? '让 AI 生成每个模块的用途与关系说明'
-            : '请先到 Settings → Tools → CodeCanvas AI 配置 API Key'"
+            : '请先点击右侧「AI 设置」配置 API Key'"
           @click="startAi"
         >
           {{ aiStatus.phase === 'running' ? '分析中...' : 'AI 生成语义' }}
         </button>
+        <button class="cfg-btn" title="打开 CodeCanvas AI 设置" @click="openSettings">⚙</button>
         <button class="refresh-btn" :disabled="loading" @click="fetchData">
           {{ loading ? '扫描中...' : '刷新' }}
         </button>
       </div>
     </header>
+
+    <div v-if="!aiStatus.configured" class="cfg-hint">
+      <span>尚未配置 AI，当前只显示结构事实。</span>
+      <button class="ghost-btn" @click="openSettings">去配置</button>
+    </div>
 
     <div v-if="aiStatus.phase === 'error' && aiStatus.error" class="ai-error">
       <span class="ai-error-text">{{ aiStatus.error }}</span>
@@ -506,6 +512,14 @@ async function resetAi() {
   }
 }
 
+async function openSettings() {
+  try {
+    await fetch(`${API}/api/openSettings`, { method: 'POST' })
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 function isEdgeActive(edge) {
   const focus = hoveredId.value || selectedId.value
   if (!focus) return false
@@ -703,6 +717,37 @@ onBeforeUnmount(() => {
   padding: 8px 20px;
   background: rgba(211, 47, 47, 0.12);
   border-bottom: 1px solid rgba(211, 47, 47, 0.3);
+  flex-shrink: 0;
+}
+
+.cfg-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  border-radius: 5px;
+  color: #7fb3ad;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.cfg-btn:hover {
+  background: rgba(0, 229, 255, 0.1);
+  color: #e0f7fa;
+}
+
+.cfg-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 20px;
+  background: rgba(179, 157, 219, 0.08);
+  border-bottom: 1px solid rgba(179, 157, 219, 0.2);
+  font-size: 12px;
+  color: #b0a0e0;
   flex-shrink: 0;
 }
 

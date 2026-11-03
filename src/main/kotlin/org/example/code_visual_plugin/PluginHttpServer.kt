@@ -95,6 +95,16 @@ object PluginHttpServer {
                     AiJobs.reset()
                     write(response, gson.toJson(AiJobs.status()))
                 }
+                path == "/api/openSettings" -> {
+                    val p = project
+                    if (p != null) {
+                        ApplicationManager.getApplication().invokeLater {
+                            com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+                                .showSettingsDialog(p, org.example.code_visual_plugin.ui.AiSettingsConfigurable::class.java)
+                        }
+                    }
+                    write(response, gson.toJson(mapOf("ok" to (p != null))))
+                }
                 path == "/parseCurrentFile" -> write(response, parseCurrentFileJson())
                 else -> write(response, gson.toJson(mapOf("msg" to "plugin api ok")))
             }

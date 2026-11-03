@@ -48,17 +48,74 @@ class AiSettings : PersistentStateComponent<AiSettings.SettingsState> {
     }
 }
 
-/** API Key 存 IDE 的密码库（系统凭据管理器），绝不落盘到项目里 */
+/**
+ * API Key 存 IDE 的系统凭据库（Windows 凭据管理器 / macOS Keychain）。
+ *
+ * 注意：PasswordSafe 的读写是「慢操作」，**不能在 EDT 上直接调**，
+ * 否则 IDEA 会抛 "Slow operations are prohibited on EDT"。
+ * 所以这里做了一层内存缓存：
+ *   - 后台线程可以走 load() 同步读
+ *   - EDT（设置页 isModified / createComponent）只能读 cached()
+ *   - 异步加载完成后再回填 UI
+ */
 object AiKeyStore {
+
     private val ATTRS = CredentialAttributes("CodeCanvasAI/apiKey")
 
-    fun save(key: String?) {
-        PasswordSafe.instance.setPassword(ATTRS, key?.takeIf { it.isNotBlank() })
+    @Volatile
+    private var cached: String? = null
+
+    @Volatile
+    private var loadedOnce = false
+
+    private fun onEdt(): Boolean = ApplicationManager.getApplication().isDispatchThread
+
+    fun cached(): String? = cached
+
+    fun load(): String? = if (loadedOnce) cached else safeRead()
+
+    fun isConfigured(): Boolean {
+        val value = when {
+            loadedOnce -> cached
+            onEdt() -> null          // EDT 上不读凭据库
+            else -> safeRead()
+        }
+        return !value.isNullOrBlank()
     }
 
-    fun load(): String? = PasswordSafe.instance.getPassword(ATTRS)
+    private fun safeRead(): String? {
+        return try {
+            val value = PasswordSafe.instance.getPassword(ATTRS)
+            cached = value
+            loadedOnce = true
+            value
+        } catch (e: Throwable) {
+            loadedOnce = true
+            null
+        }
+    }
 
-    fun isConfigured(): Boolean = !load().isNullOrBlank()
+    /** 后台读一次，回到 EDT 回调。设置页用它填充输入框。 */
+    fun refreshAsync(onDone: (String?) -> Unit = {}) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val value = safeRead()
+            ApplicationManager.getApplication().invokeLater { onDone(value) }
+        }
+    }
+
+    fun save(key: String?) {
+        val normalized = key?.takeIf { it.isNotBlank() }
+        cached = normalized
+        loadedOnce = true
+        // 写凭据库同样不能在 EDT，扔到后台
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                PasswordSafe.instance.setPassword(ATTRS, normalized)
+            } catch (e: Throwable) {
+                // 某些环境下没有可用的凭据库，静默失败；本次会话内仍可用 cached 值
+            }
+        }
+    }
 }
 
 /** 调 AI 时的可读异常，直接透传给前端显示 */

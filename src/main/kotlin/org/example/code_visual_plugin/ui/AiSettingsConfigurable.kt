@@ -88,8 +88,24 @@ class AiSettingsConfigurable : Configurable {
         baseUrlField.text = s.baseUrl
         modelField.text = s.model
         temperatureField.text = s.temperature.toString()
-        keyField.text = AiKeyStore.load().orEmpty()
-        statusLabel.text = if (AiKeyStore.isConfigured()) "已配置 Key" else "尚未配置 Key"
+
+        // 凭据库是慢操作，不能在这（EDT）同步读：先用缓存，再异步回填
+        keyField.text = AiKeyStore.cached().orEmpty()
+        updateKeyStatus()
+
+        AiKeyStore.refreshAsync { key ->
+            if (keyField.text.isEmpty() && !key.isNullOrEmpty()) {
+                keyField.text = key
+            }
+            updateKeyStatus()
+        }
+    }
+
+    private fun updateKeyStatus() {
+        statusLabel.text = when {
+            !AiKeyStore.cached().isNullOrBlank() -> "已配置 Key"
+            else -> "尚未配置 Key"
+        }
     }
 
     override fun isModified(): Boolean {
@@ -98,7 +114,7 @@ class AiSettingsConfigurable : Configurable {
             baseUrlField.text != s.baseUrl ||
             modelField.text != s.model ||
             temperatureField.text != s.temperature.toString() ||
-            keyField.password.concatToString() != AiKeyStore.load().orEmpty()
+            keyField.password.concatToString() != AiKeyStore.cached().orEmpty()
     }
 
     override fun apply() {
