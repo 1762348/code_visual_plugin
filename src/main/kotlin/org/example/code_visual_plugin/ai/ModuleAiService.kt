@@ -21,6 +21,7 @@ object ModuleAiService {
     data class AiModule(
         val id: String = "",
         val purpose: String = "",
+        val fix: String = "",
         val relations: List<AiRelation> = emptyList()
     )
 
@@ -42,6 +43,7 @@ object ModuleAiService {
         AiCache.clear()
         for (module in valid) {
             AiCache.putPurpose(module.id, module.purpose)
+            AiCache.putAdvice(module.id, module.fix)
             for (relation in module.relations) {
                 if (relation.to in known) {
                     AiCache.putNote(module.id, relation.to, relation.note)
@@ -58,15 +60,17 @@ object ModuleAiService {
         val system = """
             你是一名资深软件架构师，正在帮开发者理解一个陌生项目的结构。
 
-            用户会给你这个项目的「目录模块清单」和「模块间引用关系」，不提供完整源码。
+            用户会给你这个项目的「目录模块清单」「模块间引用关系」和「部分文件的问题」，不提供完整源码。
             请基于目录命名、文件名、文件分布和引用关系推断：
 
             1. 每个模块的用途：一句中文，不超过 40 字，说清"它负责什么、处理什么数据"。
                不要复述文件数、行数这类数字，不要用"该模块"开头。
-            2. 关键依赖关系的说明：一句中文，不超过 25 字，说清"传了什么数据、做了什么处理"。
+            2. 如果某个模块下面列出了「问题」，请在 fix 字段给出一条具体修复建议，不超过 50 字。
+               没有问题的模块，fix 必须是空字符串。
+            3. 关键依赖关系的说明：一句中文，不超过 25 字，说清"传了什么数据、做了什么处理"。
 
             只输出 JSON，不要 markdown 代码块，不要任何解释文字。格式：
-            {"modules":[{"id":"模块id","purpose":"用途","relations":[{"to":"目标模块id","note":"关系说明"}]}]}
+            {"modules":[{"id":"模块id","purpose":"用途","fix":"修复建议或空串","relations":[{"to":"目标模块id","note":"关系说明"}]}]}
         """.trimIndent()
 
         val modules = graph.nodes.sortedByDescending { it.lineCount }.take(MAX_MODULES)
@@ -82,6 +86,9 @@ object ModuleAiService {
         for (m in modules) {
             val files = m.files.take(MAX_FILES_PER_MODULE).joinToString(", ")
             sb.appendLine("- ${m.id} | ${m.name} | ${m.language} | ${m.fileCount} | ${m.lineCount} | $files")
+            if (m.issues.isNotEmpty()) {
+                sb.appendLine("  问题：" + m.issues.take(4).joinToString("；"))
+            }
         }
 
         val edges = graph.edges

@@ -161,11 +161,13 @@ object AiClient {
 object AiCache {
 
     private val purposes = HashMap<String, String>()
+    private val advices = HashMap<String, String>()
     private val notes = HashMap<String, String>()
 
     @Synchronized
     fun clear() {
         purposes.clear()
+        advices.clear()
         notes.clear()
     }
 
@@ -175,20 +177,28 @@ object AiCache {
     }
 
     @Synchronized
+    fun putAdvice(moduleId: String, advice: String) {
+        if (advice.isNotBlank()) advices[moduleId] = advice
+    }
+
+    @Synchronized
     fun putNote(fromId: String, toId: String, note: String) {
         if (note.isNotBlank()) notes["$fromId->$toId"] = note
     }
 
     @Synchronized
     fun applyTo(graph: org.example.code_visual_plugin.ProjectGraph): org.example.code_visual_plugin.ProjectGraph {
-        if (purposes.isEmpty() && notes.isEmpty()) return graph
+        if (purposes.isEmpty() && advices.isEmpty() && notes.isEmpty()) return graph
 
         val nodes = graph.nodes.map { node ->
+            val advice = advices[node.id]
             val purpose = purposes[node.id]
-            if (purpose == null) node else node.copy(
-                desc = purpose,
-                descState = "ai"
-            )
+            when {
+                // 有修复建议的模块，描述让位给"修改意见"（用户要的行为）
+                !advice.isNullOrBlank() -> node.copy(desc = advice, descState = "error", advice = advice)
+                purpose != null -> node.copy(desc = purpose, descState = "ai")
+                else -> node
+            }
         }
         val edges = graph.edges.map { edge ->
             val note = notes["${edge.from}->${edge.to}"]

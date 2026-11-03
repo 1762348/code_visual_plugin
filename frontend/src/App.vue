@@ -140,7 +140,11 @@
             <span class="badge">{{ selected.role }}</span>
           </div>
           <p class="ins-name">{{ selected.name }}</p>
-          <p class="ins-desc" :class="{ ai: selected.descState === 'ai' }">{{ selected.desc }}</p>
+          <p v-if="selected.advice" class="ins-label">修改意见</p>
+          <p
+            class="ins-desc"
+            :class="{ ai: selected.descState === 'ai', bad: selected.descState === 'error' }"
+          >{{ selected.desc }}</p>
 
           <template v-if="selectedRelations.length">
             <p class="ins-label">关系（{{ selectedRelations.length }}）</p>
@@ -884,6 +888,10 @@ onBeforeUnmount(() => {
 
 .ins-desc.ai {
   color: #8fe8cf;
+}
+
+.ins-desc.bad {
+  color: #ff9e94;
 }
 
 .ins-rel {

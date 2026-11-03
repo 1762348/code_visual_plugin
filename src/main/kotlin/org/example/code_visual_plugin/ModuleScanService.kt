@@ -5,6 +5,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiErrorElement
+import com.intellij.psi.PsiManager
+import com.intellij.psi.util.PsiTreeUtil
 
 /**
  * 语言无关的目录模块扫描。
@@ -50,6 +53,7 @@ data class ProjectModule(
     val lineCount: Int = 0,
     val language: String = "",
     val issues: List<String> = emptyList(),
+    val advice: String = "",
     val files: List<String> = emptyList()
 )
 
@@ -104,7 +108,8 @@ object ModuleScanService {
         val modulePath: String,
         val fileName: String,
         val language: String,
-        val text: String
+        val text: String,
+        val issues: List<String>
     )
 
     private fun doBuild(project: Project): ProjectGraph {
@@ -145,7 +150,11 @@ object ModuleScanService {
 
     private fun collect(project: Project): List<Hit> {
         val index = ProjectFileIndex.getInstance(project)
+        val psiManager = PsiManager.getInstance(project)
         val hits = ArrayList<Hit>()
+
+        // PSI 遍历比读文本贵，给个上限，避免超大工程把刷新拖到几秒
+        var issueBudget = 800
 
         index.iterateContent { vf ->
             if (hits.size >= MAX_FILES) return@iterateContent false
@@ -163,11 +172,37 @@ object ModuleScanService {
                 return@iterateContent true
             }
 
-            hits.add(Hit(modulePathOf(index, vf), vf.name, language, text))
+            val issues = if (issueBudget > 0) {
+                issueBudget--
+                collectIssues(psiManager, vf)
+            } else {
+                emptyList()
+            }
+
+            hits.add(Hit(modulePathOf(index, vf), vf.name, language, text, issues))
             true
         }
 
         return hits
+    }
+
+    /**
+     * 语法错误采集：PSI 里语言无关地表现为 PsiErrorElement。
+     * Java / Kotlin / JS / TS / Python / Go 等由 IDE 提供语言支持的文件都能拿到。
+     * 拿不到 PSI（比如纯文本、图片化组件）就静默返回空。
+     */
+    private fun collectIssues(psiManager: PsiManager, vf: com.intellij.openapi.vfs.VirtualFile): List<String> {
+        return try {
+            val psiFile = psiManager.findFile(vf) ?: return emptyList()
+            val errors = PsiTreeUtil.findChildrenOfType(psiFile, PsiErrorElement::class.java)
+            if (errors.isEmpty()) return emptyList()
+            errors.take(8).map { element ->
+                val description = element.errorDescription.ifBlank { "语法错误" }
+                "${psiFile.name}: $description"
+            }
+        } catch (e: Throwable) {
+            emptyList()
+        }
     }
 
     private fun skipByPath(vf: VirtualFile): Boolean {
@@ -215,17 +250,23 @@ object ModuleScanService {
             .entries.maxByOrNull { it.value }?.key ?: ""
 
         val role = roleOf(shortName)
+        val allIssues = files.flatMap { it.issues }
 
         return ProjectModule(
             id = "mod:$path",
             name = path,
             shortName = shortName,
             role = role,
-            desc = "$role · ${files.size} 文件 ${lines} 行 · $language",
-            descState = "structural",
+            desc = if (allIssues.isNotEmpty()) {
+                "⚠ ${allIssues.size} 处语法错误：${allIssues.first()}"
+            } else {
+                "$role · ${files.size} 文件 ${lines} 行 · $language"
+            },
+            descState = if (allIssues.isNotEmpty()) "error" else "structural",
             fileCount = files.size,
             lineCount = lines,
             language = language,
+            issues = allIssues.take(6),
             files = files.map { it.fileName }.sorted().distinct().take(80)
         )
     }
