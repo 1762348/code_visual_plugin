@@ -4,13 +4,24 @@
     <version>1.0</version>
     <vendor>org.example</vendor>
 
+    <description><![CDATA[
+        把当前项目的目录结构画成一张可交互的模块关系图，并用 AI 生成每个模块的用途说明。
+        语言无关：Java / Kotlin / Vue / JS / TS / Python / Go / Rust / C# / C++ 等。
+    ]]></description>
+
+    <!-- 只依赖平台：不再依赖 com.intellij.java，因此可以装进任意 JetBrains IDE -->
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.intellij.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="MyToolWindow"
                     factoryClass="org.example.code_visual_plugin.MyToolWindowFactory"
                     anchor="right"/>
-    </extensions>
 
+        <applicationService serviceImplementation="org.example.code_visual_plugin.ai.AiSettings"/>
+
+        <applicationConfigurable parentId="tools"
+                                 instance="org.example.code_visual_plugin.ui.AiSettingsConfigurable"
+                                 id="org.example.code_visual_plugin.ai"
+                                 displayName="CodeCanvas AI"/>
+    </extensions>
 </idea-plugin>

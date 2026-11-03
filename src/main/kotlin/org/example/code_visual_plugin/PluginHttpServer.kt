@@ -11,6 +11,8 @@ import jakarta.servlet.http.HttpServletResponse
 import org.eclipse.jetty.server.Request
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.handler.AbstractHandler
+import org.example.code_visual_plugin.ai.AiCache
+import org.example.code_visual_plugin.ai.AiJobs
 
 /**
  * 插件内置 HTTP 服务，供工具窗里的前端页面调用。
@@ -84,6 +86,15 @@ object PluginHttpServer {
         try {
             when {
                 path == "/api/projectGraph" -> write(response, buildProjectGraphJson())
+                path == "/api/ai/status" -> write(response, gson.toJson(AiJobs.status()))
+                path == "/api/ai/analyze" -> {
+                    project?.let { AiJobs.start(it) }
+                    write(response, gson.toJson(AiJobs.status()))
+                }
+                path == "/api/ai/reset" -> {
+                    AiJobs.reset()
+                    write(response, gson.toJson(AiJobs.status()))
+                }
                 path == "/parseCurrentFile" -> write(response, parseCurrentFileJson())
                 else -> write(response, gson.toJson(mapOf("msg" to "plugin api ok")))
             }
@@ -104,7 +115,8 @@ object PluginHttpServer {
             ProjectGraph(success = false, message = "插件尚未绑定项目，请打开右侧工具窗后重试")
         )
         return try {
-            gson.toJson(ModuleScanService.build(p))
+            val graph = ModuleScanService.build(p)
+            gson.toJson(if (graph.success) AiCache.applyTo(graph) else graph)
         } catch (e: Throwable) {
             log.error("buildProjectGraph failed", e)
             gson.toJson(ProjectGraph(success = false, projectName = p.name, message = describe(e)))

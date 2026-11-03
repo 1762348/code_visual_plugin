@@ -6,15 +6,32 @@
         <span class="subtitle">{{ subtitle }}</span>
       </div>
       <div class="actions">
+        <span v-if="aiStatus.phase === 'running'" class="ai-msg">{{ aiStatus.message }}</span>
         <label class="auto">
           <input type="checkbox" v-model="autoRefresh" />
           自动
         </label>
+        <button
+          class="ai-btn"
+          :disabled="aiStatus.phase === 'running' || !aiStatus.configured"
+          :title="aiStatus.configured
+            ? '让 AI 生成每个模块的用途与关系说明'
+            : '请先到 Settings → Tools → CodeCanvas AI 配置 API Key'"
+          @click="startAi"
+        >
+          {{ aiStatus.phase === 'running' ? '分析中...' : 'AI 生成语义' }}
+        </button>
         <button class="refresh-btn" :disabled="loading" @click="fetchData">
           {{ loading ? '扫描中...' : '刷新' }}
         </button>
       </div>
     </header>
+
+    <div v-if="aiStatus.phase === 'error' && aiStatus.error" class="ai-error">
+      <span class="ai-error-text">{{ aiStatus.error }}</span>
+      <button class="ghost-btn" @click="startAi">重试</button>
+      <button class="ghost-btn" @click="resetAi">清除</button>
+    </div>
 
     <div v-if="loading && !modules.length" class="empty">
       <p class="empty-main">正在扫描项目 PSI...</p>
@@ -62,7 +79,7 @@
             class="edge-label"
             :class="{ active: isEdgeActive(r.edge) }"
             text-anchor="middle"
-          >{{ r.edge.label }}</text>
+          >{{ shortLabel(r.edge.label) }}</text>
         </g>
 
         <g
@@ -108,7 +125,7 @@
             :x="m.x + 16"
             :y="m.y + 64 + i * 15"
             class="m-desc"
-            :class="{ issue: m.node.descState === 'error' }"
+            :class="{ issue: m.node.descState === 'error', ai: m.node.descState === 'ai' }"
           >{{ line }}</text>
 
           <text :x="m.x + 16" :y="m.y + CARD_H - 12" class="m-stat">
@@ -123,7 +140,18 @@
             <span class="badge">{{ selected.role }}</span>
           </div>
           <p class="ins-name">{{ selected.name }}</p>
-          <p class="ins-desc">{{ selected.desc }}</p>
+          <p class="ins-desc" :class="{ ai: selected.descState === 'ai' }">{{ selected.desc }}</p>
+
+          <template v-if="selectedRelations.length">
+            <p class="ins-label">关系（{{ selectedRelations.length }}）</p>
+            <ul class="ins-rel">
+              <li v-for="(r, i) in selectedRelations" :key="i">
+                <span class="rel-dir">{{ r.dir }}</span>
+                <span class="rel-name">{{ r.other }}</span>
+                <span class="rel-note">{{ r.label }}</span>
+              </li>
+            </ul>
+          </template>
 
           <p class="ins-label">文件（{{ selected.fileCount }}）</p>
           <div class="chips">
@@ -168,8 +196,17 @@ const error = ref('')
 const selectedId = ref('')
 const autoRefresh = ref(false)
 
+const aiStatus = ref({
+  configured: false,
+  enabled: false,
+  phase: 'idle',
+  error: '',
+  message: '',
+})
+
 let timer = null
 let controller = null
+let aiTimer = null
 
 const subtitle = computed(() =>
   projectName.value
@@ -390,6 +427,81 @@ const routed = computed(() => {
 const selected = computed(() => modules.value.find((n) => n.id === selectedId.value) || null)
 const hoveredId = ref('')
 
+/* ------------------------------ AI ------------------------------ */
+
+function shortLabel(label) {
+  if (!label) return ''
+  return truncate(label, 12)
+}
+
+const selectedRelations = computed(() => {
+  const node = selected.value
+  if (!node) return []
+  const byId = new Map(modules.value.map((m) => [m.id, m]))
+  return relations.value
+    .filter((e) => e.from === node.id || e.to === node.id)
+    .map((e) => {
+      const outgoing = e.from === node.id
+      const other = byId.get(outgoing ? e.to : e.from)
+      return {
+        dir: outgoing ? '→' : '←',
+        other: other ? other.shortName : '?',
+        label: e.label,
+      }
+    })
+})
+
+async function fetchAiStatus() {
+  try {
+    const res = await fetch(`${API}/api/ai/status`, { headers: { Accept: 'application/json' } })
+    if (!res.ok) return
+    aiStatus.value = await res.json()
+  } catch (e) {
+    /* 服务没起来时静默 */
+  }
+}
+
+async function startAi() {
+  if (aiStatus.value.phase === 'running') return
+  aiStatus.value = { ...aiStatus.value, phase: 'running', error: '', message: '提交中...' }
+
+  try {
+    const res = await fetch(`${API}/api/ai/analyze`, { method: 'POST' })
+    aiStatus.value = await res.json()
+  } catch (e) {
+    aiStatus.value = { ...aiStatus.value, phase: 'error', error: '提交 AI 任务失败：' + e.message }
+    return
+  }
+
+  pollAi()
+}
+
+function pollAi() {
+  if (aiTimer) clearInterval(aiTimer)
+  aiTimer = setInterval(async () => {
+    await fetchAiStatus()
+    if (aiStatus.value.phase !== 'running') {
+      clearInterval(aiTimer)
+      aiTimer = null
+      if (aiStatus.value.phase === 'done') {
+        await fetchData()
+      }
+    }
+  }, 1200)
+}
+
+async function resetAi() {
+  clearInterval(aiTimer)
+  aiTimer = null
+  try {
+    const res = await fetch(`${API}/api/ai/reset`, { method: 'POST' })
+    aiStatus.value = await res.json()
+    await fetchData()
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 function isEdgeActive(edge) {
   const focus = hoveredId.value || selectedId.value
   if (!focus) return false
@@ -445,10 +557,14 @@ watch(autoRefresh, (on) => {
   if (on) timer = setInterval(fetchData, 5000)
 })
 
-onMounted(fetchData)
+onMounted(() => {
+  fetchData()
+  fetchAiStatus()
+})
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
+  if (aiTimer) clearInterval(aiTimer)
   if (controller) controller.abort()
 })
 </script>
@@ -543,6 +659,55 @@ onBeforeUnmount(() => {
 .refresh-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.ai-btn {
+  padding: 6px 16px;
+  background: linear-gradient(135deg, #3b2a63, #241a3d);
+  border: 1px solid #b39ddb;
+  border-radius: 5px;
+  color: #e6ddff;
+  cursor: pointer;
+  font-size: 12.5px;
+  transition: all 0.25s;
+  white-space: nowrap;
+}
+
+.ai-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4b3680, #2e2150);
+  box-shadow: 0 0 12px rgba(179, 157, 219, 0.35);
+}
+
+.ai-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ai-msg {
+  font-size: 11.5px;
+  color: #b39ddb;
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  background: rgba(211, 47, 47, 0.12);
+  border-bottom: 1px solid rgba(211, 47, 47, 0.3);
+  flex-shrink: 0;
+}
+
+.ai-error-text {
+  flex: 1;
+  font-size: 12px;
+  color: #ff9e94;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .stage {
@@ -640,6 +805,10 @@ onBeforeUnmount(() => {
   fill: #ff8a80;
 }
 
+.m-desc.ai {
+  fill: #8fe8cf;
+}
+
 .m-stat {
   fill: #3f6b66;
   font-size: 9.5px;
@@ -711,6 +880,47 @@ onBeforeUnmount(() => {
   padding-left: 16px;
   color: #ff8a80;
   line-height: 1.6;
+}
+
+.ins-desc.ai {
+  color: #8fe8cf;
+}
+
+.ins-rel {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.ins-rel li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  line-height: 1.5;
+  font-size: 11.5px;
+}
+
+.rel-dir {
+  color: #00ffcc;
+  font-family: Consolas, monospace;
+  flex-shrink: 0;
+}
+
+.rel-name {
+  color: #7ffce8;
+  font-family: Consolas, monospace;
+  flex-shrink: 0;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rel-note {
+  color: #6f9d98;
+  font-size: 11px;
+  word-break: break-word;
 }
 
 .ins-hint {
