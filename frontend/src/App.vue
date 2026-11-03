@@ -112,7 +112,7 @@
           >{{ line }}</text>
 
           <text :x="m.x + 16" :y="m.y + CARD_H - 12" class="m-stat">
-            {{ m.node.classCount }} 类 · {{ m.node.methodCount }} 方法
+            {{ m.node.fileCount }} 文件 · {{ m.node.lineCount }} 行
           </text>
         </g>
       </svg>
@@ -125,9 +125,9 @@
           <p class="ins-name">{{ selected.name }}</p>
           <p class="ins-desc">{{ selected.desc }}</p>
 
-          <p class="ins-label">包内类型（{{ selected.classCount }}）</p>
+          <p class="ins-label">文件（{{ selected.fileCount }}）</p>
           <div class="chips">
-            <span v-for="c in selected.classes" :key="c" class="chip">{{ c }}</span>
+            <span v-for="c in selected.files" :key="c" class="chip">{{ c }}</span>
           </div>
 
           <p v-if="selected.issues && selected.issues.length" class="ins-label">问题</p>
@@ -161,7 +161,7 @@ const MAX_DESC_LINES = 2
 
 const modules = ref([])
 const relations = ref([])
-const stats = ref({ packages: 0, classes: 0, javaFiles: 0, relations: 0 })
+const stats = ref({ modules: 0, files: 0, lines: 0, relations: 0, languages: [] })
 const projectName = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -172,12 +172,14 @@ let timer = null
 let controller = null
 
 const subtitle = computed(() =>
-  projectName.value ? `${projectName.value} · ${stats.value.packages} 个包` : '未加载项目',
+  projectName.value
+    ? `${projectName.value} · ${stats.value.modules} 个模块${stats.value.languages?.length ? ' · ' + stats.value.languages.join(' / ') : ''}`
+    : '未加载项目',
 )
 
 const footerStats = computed(
   () =>
-    `${stats.value.packages} 包 · ${stats.value.classes} 类 · ${stats.value.javaFiles} 文件 · ${stats.value.relations} 关系`,
+    `${stats.value.modules} 模块 · ${stats.value.files} 文件 · ${stats.value.lines} 行 · ${stats.value.relations} 关系`,
 )
 
 /* ------------------------------ 文本工具 ------------------------------ */
@@ -218,31 +220,40 @@ function truncate(text, maxUnits) {
 
 /* ------------------------------ 配色 ------------------------------ */
 
-const ROLE_FILL = {
-  接口层: '#0d3b4a',
-  服务层: '#0d3a34',
-  数据访问层: '#2f2a4a',
-  数据模型: '#3a2f1a',
-  配置: '#22323d',
-  工具: '#1d2f2a',
-  异常: '#3d2020',
-  横切: '#2a2340',
-  界面: '#10303a',
-  测试: '#243024',
-  业务: '#152c2c',
-}
 const ROLE_TEXT = {
-  接口层: '#4fc3f7',
-  服务层: '#4dd0b1',
-  数据访问层: '#b39ddb',
-  数据模型: '#ffb74d',
-  配置: '#90a4ae',
+  界面: '#4fc3f7',
+  组件: '#4dd0e1',
+  路由: '#9fa8da',
+  状态: '#ffb74d',
+  服务: '#4dd0b1',
+  接口层: '#64b5f6',
+  数据访问: '#b39ddb',
+  数据模型: '#ffcc80',
   工具: '#80cbc4',
-  异常: '#ff8a80',
+  配置: '#90a4ae',
   横切: '#b0a0e0',
-  界面: '#4dd0e1',
-  测试: '#aed581',
+  资源: '#aed581',
+  测试: '#c5e1a5',
+  异常: '#ff8a80',
   业务: '#80cbc4',
+}
+
+const ROLE_FILL = {
+  界面: '#0d3444',
+  组件: '#0d3b3f',
+  路由: '#252b45',
+  状态: '#3a2f1a',
+  服务: '#0d3a34',
+  接口层: '#12354a',
+  数据访问: '#2f2a4a',
+  数据模型: '#3a2c18',
+  工具: '#1d2f2a',
+  配置: '#22323d',
+  横切: '#2a2340',
+  资源: '#23301c',
+  测试: '#0e2410',
+  异常: '#3d2020',
+  业务: '#152c2c',
 }
 
 const fillOf = (n) => ROLE_FILL[n.role] || '#152c2c'
@@ -411,7 +422,7 @@ async function fetchData() {
 
     modules.value = data.nodes || []
     relations.value = data.edges || []
-    stats.value = data.stats || { packages: 0, classes: 0, javaFiles: 0, relations: 0 }
+    stats.value = data.stats || { modules: 0, files: 0, lines: 0, relations: 0, languages: [] }
     projectName.value = data.projectName || ''
 
     if (!modules.value.some((n) => n.id === selectedId.value)) selectedId.value = ''

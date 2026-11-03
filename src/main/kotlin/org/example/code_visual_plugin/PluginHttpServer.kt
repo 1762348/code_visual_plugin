@@ -104,7 +104,7 @@ object PluginHttpServer {
             ProjectGraph(success = false, message = "插件尚未绑定项目，请打开右侧工具窗后重试")
         )
         return try {
-            gson.toJson(PackageGraphService.build(p))
+            gson.toJson(ModuleScanService.build(p))
         } catch (e: Throwable) {
             log.error("buildProjectGraph failed", e)
             gson.toJson(ProjectGraph(success = false, projectName = p.name, message = describe(e)))
