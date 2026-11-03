@@ -75,6 +75,9 @@ object ModuleScanService {
         "__pycache__", ".dart_tool", "Pods", "DerivedData", ".cache"
     )
 
+    /** 生成模块路径时会剥掉这些约定前缀，解析 import 时也要能对得上 */
+    private val PREFIXES = listOf("src/", "app/", "lib/")
+
     /** 扩展名 → 语言。白名单本身就是"什么算代码"的定义。 */
     private val LANGUAGES = mapOf(
         "java" to "Java", "kt" to "Kotlin", "kts" to "Kotlin", "groovy" to "Groovy",
@@ -349,33 +352,47 @@ object ModuleScanService {
         token = token.substringBefore(';').substringBefore(" as ").substringBefore(" //")
         if (token.isEmpty()) return null
 
+        // 别名：@/xxx  ~/xxx（Vue / Vite 最常见）
+        val aliasStripped = token.removePrefix("@/").removePrefix("~/")
+        if (aliasStripped != token) {
+            resolveCandidate(aliasStripped, modules, fromPath)?.let { return it }
+            return resolveCandidate("src/$aliasStripped", modules, fromPath)
+        }
+
         if (token.startsWith(".")) {
-            val joined = normalize("$fromPath/$token")
-            return matchByPrefix(joined, modules)
+            return resolveCandidate(normalize("$fromPath/$token"), modules, fromPath)
         }
 
         if (token.contains('.') && !token.contains('/')) {
-            val asPath = token.replace('.', '/')
-            matchByPrefix(asPath, modules)?.let { return it }
+            resolveCandidate(token.replace('.', '/'), modules, fromPath)?.let { return it }
         }
 
         val asPath = token.replace(':', '/').replace('\\', '/').trim('/')
-        return matchByPrefix(asPath, modules)
+        return resolveCandidate(asPath, modules, fromPath)
     }
 
-    /** 找「候选路径的前缀」里最长的那个模块 */
-    private fun matchByPrefix(candidate: String, modules: List<String>): String? {
+    /**
+     * 模块路径可能剥过前缀（src/、app/），而 import 里的相对路径没剥。
+     * 所以原样和剥前缀两种写法都试，并且要排除自身 ——
+     * 否则 "src/components/Navbar.vue" 会先命中模块 "src" 变成自引用。
+     */
+    private fun resolveCandidate(candidate: String, modules: List<String>, fromPath: String): String? {
         val clean = candidate.trim('/')
         if (clean.isEmpty()) return null
 
-        var best: String? = null
-        for (m in modules) {
-            if (m == "(项目根)") continue
-            if (clean == m || clean.startsWith("$m/")) {
-                if (best == null || m.length > best.length) best = m
-            }
+        val variants = ArrayList<String>(4)
+        variants.add(clean)
+        for (prefix in PREFIXES) {
+            if (clean.startsWith(prefix)) variants.add(clean.removePrefix(prefix))
         }
-        return best
+
+        for (variant in variants) {
+            val hit = modules
+                .filter { it != "(项目根)" && (variant == it || variant.startsWith("$it/")) }
+                .maxByOrNull { it.length }
+            if (hit != null && hit != fromPath) return hit
+        }
+        return null
     }
 
     private fun normalize(path: String): String {
