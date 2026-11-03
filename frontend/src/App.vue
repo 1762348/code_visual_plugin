@@ -2,29 +2,34 @@
   <div class="container">
     <header class="header">
       <div class="brand">
-        <h1 class="title">AI 代码可视化画布</h1>
+        <h1 class="title">项目包结构图</h1>
         <span class="subtitle">{{ subtitle }}</span>
       </div>
       <div class="actions">
         <label class="auto">
           <input type="checkbox" v-model="autoRefresh" />
-          自动刷新
+          自动
         </label>
         <button class="refresh-btn" :disabled="loading" @click="fetchData">
-          {{ loading ? '解析中...' : '刷新解析' }}
+          {{ loading ? '扫描中...' : '刷新' }}
         </button>
       </div>
     </header>
 
-    <div v-if="error" class="error-box">
-      <p class="error-title">无法获取代码结构</p>
+    <div v-if="loading && !modules.length" class="empty">
+      <p class="empty-main">正在扫描项目 PSI...</p>
+      <p class="tip">首次扫描需要几百毫秒到几秒，取决于项目大小</p>
+    </div>
+
+    <div v-else-if="error" class="error-box">
+      <p class="error-title">无法获取包结构</p>
       <p class="error-msg">{{ error }}</p>
       <button class="ghost-btn" @click="fetchData">重试</button>
     </div>
 
-    <div v-else-if="!nodes.length" class="empty">
-      <p class="empty-main">等待解析 PSI 数据...</p>
-      <p class="tip">请在左侧打开一个 Java 文件，点击右上角「刷新解析」</p>
+    <div v-else-if="!modules.length" class="empty">
+      <p class="empty-main">没有可显示的包</p>
+      <p class="tip">当前项目里没有 .java 源文件？</p>
     </div>
 
     <div v-else class="stage">
@@ -39,91 +44,106 @@
             markerHeight="6"
             orient="auto-start-reverse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#00e5ff" fill-opacity="0.7" />
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
           </marker>
         </defs>
 
-        <path
-          v-for="r in routed"
-          :key="r.key"
-          :d="r.d"
-          class="edge"
-          :class="[`edge-${r.edge.kind}`, { active: isEdgeActive(r.edge) }]"
-          fill="none"
-          marker-end="url(#arrow)"
-        />
+        <g v-for="r in routed" :key="r.key">
+          <path
+            :d="r.d"
+            class="edge"
+            :class="[`edge-${r.edge.kind}`, { active: isEdgeActive(r.edge) }]"
+            fill="none"
+            marker-end="url(#arrow)"
+          />
+          <text
+            :x="r.lx"
+            :y="r.ly"
+            class="edge-label"
+            :class="{ active: isEdgeActive(r.edge) }"
+            text-anchor="middle"
+          >{{ r.edge.label }}</text>
+        </g>
 
         <g
-          v-for="p in placed"
-          :key="p.node.id"
-          class="node"
-          :class="{ selected: p.node.id === selectedId, dim: isDim(p.node) }"
-          :transform="`translate(${p.box.x}, ${p.box.y})`"
-          @click="selectedId = p.node.id"
+          v-for="m in placed"
+          :key="m.node.id"
+          class="module"
+          :class="{ selected: m.node.id === selectedId }"
+          @click="selectedId = m.node.id"
         >
-          <title>{{ tipOf(p.node) }}</title>
           <rect
-            :x="-p.box.w / 2"
-            :y="-p.box.h / 2"
-            :width="p.box.w"
-            :height="p.box.h"
-            rx="8"
-            :fill="colorOf(p.node.type)"
-            :stroke="p.node.id === selectedId ? '#00ffcc' : '#123a36'"
-            stroke-width="1.5"
+            :x="m.x"
+            :y="m.y"
+            :width="CARD_W"
+            :height="CARD_H"
+            rx="10"
+            :fill="fillOf(m.node)"
+            :stroke="m.node.id === selectedId ? '#00ffcc' : borderColorOf(m.node)"
+            :stroke-width="m.node.id === selectedId ? 2 : 1.2"
           />
-          <text text-anchor="middle" dy="4" class="node-label">{{ p.node.label }}</text>
-          <text :x="-p.box.w / 2 + 9" :y="-p.box.h / 2 - 7" class="node-type">
-            {{ p.node.type.toUpperCase() }}
+
+          <text :x="m.x + 16" :y="m.y + 26" class="m-name">{{ m.node.shortName }}</text>
+
+          <rect
+            :x="m.x + CARD_W - 16 - m.roleWidth"
+            :y="m.y + 12"
+            :width="m.roleWidth"
+            :height="18"
+            rx="4"
+            :fill="roleFill(m.node.role)"
+          />
+          <text
+            :x="m.x + CARD_W - 16 - m.roleWidth / 2"
+            :y="m.y + 25"
+            class="m-role"
+            text-anchor="middle"
+          >{{ m.node.role }}</text>
+
+          <text :x="m.x + 16" :y="m.y + 44" class="m-pkg">{{ truncate(m.node.name, 30) }}</text>
+
+          <text
+            v-for="(line, i) in m.lines"
+            :key="i"
+            :x="m.x + 16"
+            :y="m.y + 64 + i * 15"
+            class="m-desc"
+            :class="{ issue: m.node.descState === 'error' }"
+          >{{ line }}</text>
+
+          <text :x="m.x + 16" :y="m.y + CARD_H - 12" class="m-stat">
+            {{ m.node.classCount }} 类 · {{ m.node.methodCount }} 方法
           </text>
-          <circle
-            v-if="p.node.state === 'pending'"
-            :cx="p.box.w / 2 - 9"
-            :cy="-p.box.h / 2 + 9"
-            r="3.5"
-            class="dot-pending"
-          >
-            <title>AI 语义待生成</title>
-          </circle>
         </g>
       </svg>
 
       <aside class="inspector">
         <template v-if="selected">
           <div class="ins-head">
-            <span class="badge" :class="`badge-${selected.type}`">{{ selected.type }}</span>
-            <span class="ins-title">{{ selected.label }}</span>
+            <span class="badge">{{ selected.role }}</span>
+          </div>
+          <p class="ins-name">{{ selected.name }}</p>
+          <p class="ins-desc">{{ selected.desc }}</p>
+
+          <p class="ins-label">包内类型（{{ selected.classCount }}）</p>
+          <div class="chips">
+            <span v-for="c in selected.classes" :key="c" class="chip">{{ c }}</span>
           </div>
 
-          <div class="ins-row" v-if="selected.signature">
-            <span class="ins-key">签名</span>
-            <span class="ins-val mono">{{ selected.signature }}</span>
-          </div>
-
-          <div class="ins-row">
-            <span class="ins-key">语义</span>
-            <span class="ins-val" :class="{ muted: selected.state === 'pending' }">
-              {{ selected.state === 'pending' ? '待 AI 生成' : selected.summary }}
-            </span>
-          </div>
-
-          <div class="ins-row" v-if="selected.calls && selected.calls.length">
-            <span class="ins-key">调用</span>
-            <span class="ins-val mono">{{ selected.calls.join(' · ') }}</span>
-          </div>
-
-          <pre v-if="selected.source" class="ins-src">{{ selected.source }}</pre>
+          <p v-if="selected.issues && selected.issues.length" class="ins-label">问题</p>
+          <ul v-if="selected.issues && selected.issues.length" class="ins-issues">
+            <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
+          </ul>
         </template>
-        <p v-else class="ins-hint">点击任意节点查看详情</p>
+        <p v-else class="ins-hint">点击任意模块查看包内详情</p>
       </aside>
     </div>
 
     <footer class="legend">
-      <span><i class="dot class"></i>类</span>
-      <span><i class="dot method"></i>方法</span>
-      <span><i class="dot field"></i>字段</span>
-      <span><i class="line"></i>调用</span>
-      <span class="count">节点 {{ nodes.length }} · 连线 {{ edges.length }}</span>
+      <span><i class="lg lg-extends"></i>继承</span>
+      <span><i class="lg lg-implements"></i>实现</span>
+      <span><i class="lg lg-uses"></i>依赖</span>
+      <span class="count">{{ footerStats }}</span>
     </footer>
   </div>
 </template>
@@ -133,9 +153,16 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 
 const API = 'http://127.0.0.1:8899'
 
-const nodes = ref([])
-const edges = ref([])
-const fileName = ref('')
+const CARD_W = 272
+const CARD_H = 112
+const GAP_X = 96
+const GAP_Y = 56
+const MAX_DESC_LINES = 2
+
+const modules = ref([])
+const relations = ref([])
+const stats = ref({ packages: 0, classes: 0, javaFiles: 0, relations: 0 })
+const projectName = ref('')
 const loading = ref(false)
 const error = ref('')
 const selectedId = ref('')
@@ -144,218 +171,212 @@ const autoRefresh = ref(false)
 let timer = null
 let controller = null
 
-const COLORS = { class: '#00695c', method: '#01579b', field: '#4a148c' }
-const FALLBACK_BOX = { x: 0, y: 0, w: 120, h: 40 }
-
-const colorOf = (type) => COLORS[type] || '#37474f'
-
-const subtitle = computed(() => {
-  const name = fileName.value || '未打开 Java 文件'
-  return `${name} · ${nodes.value.length} 节点 / ${edges.value.length} 连线`
-})
-
-/* ---------------------------------------------------------------
- * 契约归一化
- *   新契约：{ nodes: [...], edges: [...] }              直接使用
- *   旧契约：{ packages: [{ classes: [{ methods, fields }] }] }  就地拍平
- * 这样无论插件端是否已重新编译，前端都能出图。
- * ------------------------------------------------------------- */
-function splitSummary(raw) {
-  const text = (raw || '').trim()
-  if (!text || text.includes('【AI待生成】')) {
-    return { text: '', state: 'pending' }
-  }
-  return { text, state: 'ai' }
-}
-
-function fromLegacy(data) {
-  const outNodes = []
-  const outEdges = []
-  const seen = new Set()
-
-  const push = (node) => {
-    if (seen.has(node.id)) return
-    seen.add(node.id)
-    outNodes.push(node)
-  }
-
-  for (const pkg of data.packages || []) {
-    const pkgName = pkg.packageName || 'default'
-    for (const cls of pkg.classes || []) {
-      const classId = `c:${pkgName}.${cls.className}`
-      const s = splitSummary(cls.summary)
-
-      push({
-        id: classId,
-        type: 'class',
-        label: cls.className,
-        signature: `${pkgName}.${cls.className}`,
-        summary: s.text,
-        state: s.state,
-      })
-
-      for (const fieldName of cls.fields || []) {
-        const fieldId = `f:${classId}#${fieldName}`
-        push({
-          id: fieldId,
-          type: 'field',
-          label: fieldName,
-          owner: classId,
-          summary: '',
-          state: 'pending',
-        })
-        outEdges.push({ from: classId, to: fieldId, kind: 'field' })
-      }
-
-      const byName = new Map()
-      for (const m of cls.methods || []) {
-        const methodId = `m:${classId}#${m.methodName}`
-        byName.set(m.methodName, methodId)
-        const ms = splitSummary(m.summary)
-        push({
-          id: methodId,
-          type: 'method',
-          label: m.methodName,
-          owner: classId,
-          signature: m.methodName,
-          summary: ms.text,
-          state: ms.state,
-          calls: m.callList || [],
-          vars: m.varList || [],
-          source: m.methodSource || '',
-        })
-        outEdges.push({ from: classId, to: methodId, kind: 'method' })
-      }
-
-      // 调用边：javaparser 只能给出被调方法名，同文件同名即视为一条边
-      for (const n of outNodes) {
-        if (n.type !== 'method' || !n.owner || n.owner !== classId) continue
-        for (const callee of n.calls || []) {
-          const target = byName.get(callee)
-          if (target && target !== n.id) {
-            outEdges.push({ from: n.id, to: target, kind: 'call' })
-          }
-        }
-      }
-    }
-  }
-
-  return { nodes: outNodes, edges: outEdges }
-}
-
-function normalize(data) {
-  if (Array.isArray(data.nodes) && data.nodes.length > 0) {
-    return {
-      nodes: data.nodes.map((n) => ({ ...n, state: n.summaryState || n.state || 'pending' })),
-      edges: data.edges || [],
-    }
-  }
-  return fromLegacy(data)
-}
-
-/* --------------------------------------------------------------- */
-/* 分层布局：字段在左、类居中、方法在右，每个类独立一块           */
-/* --------------------------------------------------------------- */
-const boxWidth = (label) => Math.min(250, Math.max(112, (label || '').length * 8.6 + 46))
-
-const layout = computed(() => {
-  const pos = new Map()
-  const all = nodes.value
-  const roots = all.filter((n) => !n.owner)
-  const rowH = 52
-  let cursorY = 0
-
-  for (const root of roots) {
-    const children = all.filter((n) => n.owner === root.id)
-    const fields = children.filter((n) => n.type === 'field')
-    const methods = children.filter((n) => n.type === 'method')
-
-    const rows = Math.max(methods.length, fields.length, 1)
-    const blockH = Math.max(56, rows * rowH)
-    const centerY = cursorY + blockH / 2
-
-    pos.set(root.id, { x: 0, y: centerY, w: boxWidth(root.label), h: 54 })
-
-    const firstY = centerY - ((rows - 1) * rowH) / 2
-    methods.forEach((n, i) => {
-      pos.set(n.id, { x: 340, y: firstY + i * rowH, w: boxWidth(n.label), h: 40 })
-    })
-    fields.forEach((n, i) => {
-      pos.set(n.id, { x: -340, y: firstY + i * rowH, w: boxWidth(n.label), h: 40 })
-    })
-
-    cursorY += blockH + 96
-  }
-
-  // 兜底：没有归属的节点单独排一列
-  let orphanY = cursorY + 40
-  for (const n of all) {
-    if (pos.has(n.id)) continue
-    pos.set(n.id, { x: 0, y: orphanY, w: boxWidth(n.label), h: 44 })
-    orphanY += 70
-  }
-
-  return pos
-})
-
-const placed = computed(() =>
-  nodes.value.map((node) => ({ node, box: layout.value.get(node.id) || FALLBACK_BOX })),
+const subtitle = computed(() =>
+  projectName.value ? `${projectName.value} · ${stats.value.packages} 个包` : '未加载项目',
 )
 
-const viewBox = computed(() => {
-  const boxes = [...layout.value.values()]
-  if (!boxes.length) return '0 0 800 600'
+const footerStats = computed(
+  () =>
+    `${stats.value.packages} 包 · ${stats.value.classes} 类 · ${stats.value.javaFiles} 文件 · ${stats.value.relations} 关系`,
+)
 
+/* ------------------------------ 文本工具 ------------------------------ */
+
+function unitsOf(ch) {
+  return /[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/.test(ch) ? 1 : 0.56
+}
+
+function wrapText(text, maxUnits) {
+  const lines = []
+  let cur = ''
+  let used = 0
+  for (const ch of text || '') {
+    const u = unitsOf(ch)
+    if (used + u > maxUnits && cur) {
+      lines.push(cur)
+      cur = ''
+      used = 0
+    }
+    cur += ch
+    used += u
+  }
+  if (cur) lines.push(cur)
+  return lines
+}
+
+function truncate(text, maxUnits) {
+  if (!text) return ''
+  let used = 0
+  let out = ''
+  for (const ch of text) {
+    used += unitsOf(ch)
+    if (used > maxUnits) return out + '…'
+    out += ch
+  }
+  return out
+}
+
+/* ------------------------------ 配色 ------------------------------ */
+
+const ROLE_FILL = {
+  接口层: '#0d3b4a',
+  服务层: '#0d3a34',
+  数据访问层: '#2f2a4a',
+  数据模型: '#3a2f1a',
+  配置: '#22323d',
+  工具: '#1d2f2a',
+  异常: '#3d2020',
+  横切: '#2a2340',
+  界面: '#10303a',
+  测试: '#243024',
+  业务: '#152c2c',
+}
+const ROLE_TEXT = {
+  接口层: '#4fc3f7',
+  服务层: '#4dd0b1',
+  数据访问层: '#b39ddb',
+  数据模型: '#ffb74d',
+  配置: '#90a4ae',
+  工具: '#80cbc4',
+  异常: '#ff8a80',
+  横切: '#b0a0e0',
+  界面: '#4dd0e1',
+  测试: '#aed581',
+  业务: '#80cbc4',
+}
+
+const fillOf = (n) => ROLE_FILL[n.role] || '#152c2c'
+const roleFill = (r) => (ROLE_TEXT[r] || '#80cbc4') + '22'
+const borderColorOf = (n) => (ROLE_TEXT[n.role] || '#80cbc4') + '66'
+
+/* ------------------------------ 布局 ------------------------------ */
+
+// 按依赖深度分层：被依赖的包排在右边，形成左→右的流向
+function layerOf(nodes, edges) {
+  const layer = new Map(nodes.map((n) => [n.id, 0]))
+  for (let round = 0; round < nodes.length; round++) {
+    let changed = false
+    for (const e of edges) {
+      if (!layer.has(e.from) || !layer.has(e.to)) continue
+      const lf = layer.get(e.from)
+      const lt = layer.get(e.to)
+      if (lt <= lf) {
+        layer.set(e.to, lf + 1)
+        changed = true
+      }
+    }
+    if (!changed) break
+  }
+  return layer
+}
+
+const placed = computed(() => {
+  const nodes = modules.value
+  if (!nodes.length) return []
+
+  const layer = layerOf(nodes, relations.value)
+  const columns = new Map()
+  for (const n of nodes) {
+    const l = layer.get(n.id) || 0
+    if (!columns.has(l)) columns.set(l, [])
+    columns.get(l).push(n)
+  }
+
+  const result = []
+  for (const [l, list] of [...columns.entries()].sort((a, b) => a[0] - b[0])) {
+    // 同层内按包名排序，保证多次刷新位置稳定
+    list.sort((a, b) => a.name.localeCompare(b.name))
+    const total = list.length
+    list.forEach((node, i) => {
+      result.push({
+        node,
+        x: l * (CARD_W + GAP_X),
+        y: (i - (total - 1) / 2) * (CARD_H + GAP_Y),
+        lines: wrapText(node.desc, 24).slice(0, MAX_DESC_LINES),
+        roleWidth: 14 + node.role.length * 11,
+      })
+    })
+  }
+  return result
+})
+
+const boxById = computed(() => {
+  const m = new Map()
+  for (const p of placed.value) m.set(p.node.id, p)
+  return m
+})
+
+const viewBox = computed(() => {
+  const list = placed.value
+  if (!list.length) return '0 0 900 600'
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
   let maxY = -Infinity
-
-  for (const b of boxes) {
-    minX = Math.min(minX, b.x - b.w / 2)
-    maxX = Math.max(maxX, b.x + b.w / 2)
-    minY = Math.min(minY, b.y - b.h / 2)
-    maxY = Math.max(maxY, b.y + b.h / 2)
+  for (const p of list) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x + CARD_W)
+    maxY = Math.max(maxY, p.y + CARD_H)
   }
-
-  const pad = 72
-  const w = Math.max(360, maxX - minX + pad * 2)
-  const h = Math.max(260, maxY - minY + pad * 2)
+  const pad = 90
+  const w = Math.max(420, maxX - minX + pad * 2)
+  const h = Math.max(300, maxY - minY + pad * 2)
   return `${minX - pad} ${minY - pad} ${w} ${h}`
 })
 
-function anchor(box, towardX) {
-  const dir = towardX >= box.x ? 1 : -1
-  return { x: box.x + (dir * box.w) / 2, y: box.y }
+function borderPoint(box, dx, dy) {
+  const hw = CARD_W / 2
+  const hh = CARD_H / 2
+  const cx = box.x + hw
+  const cy = box.y + hh
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return { x: cx, y: cy }
+  const sx = Math.abs(dx) < 0.001 ? Infinity : hw / Math.abs(dx)
+  const sy = Math.abs(dy) < 0.001 ? Infinity : hh / Math.abs(dy)
+  const s = Math.min(sx, sy)
+  return { x: cx + dx * s, y: cy + dy * s }
 }
 
-function pathFor(edge) {
-  const a = layout.value.get(edge.from)
-  const b = layout.value.get(edge.to)
-  if (!a || !b) return ''
+const routed = computed(() => {
+  const out = []
+  for (let i = 0; i < relations.value.length; i++) {
+    const e = relations.value[i]
+    const a = boxById.value.get(e.from)
+    const b = boxById.value.get(e.to)
+    if (!a || !b) continue
 
-  // 同一列（方法调方法）向右绕一段，避免压在方块上
-  if (Math.abs(a.x - b.x) < 1) {
-    const x1 = a.x + a.w / 2
-    const x2 = b.x + b.w / 2
-    const bulge = 78
-    return `M ${x1} ${a.y} C ${x1 + bulge} ${a.y}, ${x2 + bulge} ${b.y}, ${x2} ${b.y}`
+    const acx = a.x + CARD_W / 2
+    const acy = a.y + CARD_H / 2
+    const bcx = b.x + CARD_W / 2
+    const bcy = b.y + CARD_H / 2
+    const dx = bcx - acx
+    const dy = bcy - acy
+
+    const p1 = borderPoint(a, dx, dy)
+    const p2 = borderPoint(b, -dx, -dy)
+
+    let d
+    let lx
+    let ly
+    if (Math.abs(bcx - acx) < 1) {
+      // 同一列：向右绕一段
+      const bulge = 70
+      d = `M ${a.x + CARD_W} ${acy} C ${a.x + CARD_W + bulge} ${acy}, ${b.x + CARD_W + bulge} ${bcy}, ${b.x + CARD_W} ${bcy}`
+      lx = a.x + CARD_W + bulge * 0.75
+      ly = (acy + bcy) / 2
+    } else {
+      const mx = (p1.x + p2.x) / 2
+      d = `M ${p1.x} ${p1.y} C ${mx} ${p1.y}, ${mx} ${p2.y}, ${p2.x} ${p2.y}`
+      lx = mx
+      ly = (p1.y + p2.y) / 2 - 4
+    }
+
+    out.push({ key: `${e.from}->${e.to}#${i}`, edge: e, d, lx, ly })
   }
+  return out
+})
 
-  const p1 = anchor(a, b.x)
-  const p2 = anchor(b, a.x)
-  const midX = (p1.x + p2.x) / 2
-  return `M ${p1.x} ${p1.y} C ${midX} ${p1.y}, ${midX} ${p2.y}, ${p2.x} ${p2.y}`
-}
-
-const routed = computed(() =>
-  edges.value
-    .map((edge, i) => ({ edge, key: `${edge.from}->${edge.to}#${i}`, d: pathFor(edge) }))
-    .filter((r) => r.d !== ''),
-)
-
-const selected = computed(() => nodes.value.find((n) => n.id === selectedId.value) || null)
-
+const selected = computed(() => modules.value.find((n) => n.id === selectedId.value) || null)
 const hoveredId = ref('')
 
 function isEdgeActive(edge) {
@@ -364,21 +385,8 @@ function isEdgeActive(edge) {
   return edge.from === focus || edge.to === focus
 }
 
-function isDim(node) {
-  const focus = hoveredId.value || selectedId.value
-  if (!focus) return false
-  if (node.id === focus) return false
-  return !edges.value.some(
-    (e) => (e.from === focus && e.to === node.id) || (e.to === focus && e.from === node.id),
-  )
-}
+/* ------------------------------ 数据 ------------------------------ */
 
-function tipOf(node) {
-  const head = `${node.type} · ${node.label}`
-  return node.state === 'pending' ? `${head}\n语义待 AI 生成` : `${head}\n${node.summary}`
-}
-
-/* --------------------------------------------------------------- */
 async function fetchData() {
   if (controller) controller.abort()
   controller = new AbortController()
@@ -387,33 +395,31 @@ async function fetchData() {
   error.value = ''
 
   try {
-    const res = await fetch(`${API}/parseCurrentFile`, {
+    const res = await fetch(`${API}/api/projectGraph`, {
       signal: controller.signal,
       headers: { Accept: 'application/json' },
     })
-    if (!res.ok) throw new Error(`接口返回 HTTP ${res.status}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
     const data = await res.json()
     if (!data.success) {
-      error.value = data.msg || '解析失败'
-      nodes.value = []
-      edges.value = []
+      error.value = data.message || data.msg || '服务返回失败'
+      modules.value = []
+      relations.value = []
       return
     }
 
-    const normalized = normalize(data)
-    nodes.value = normalized.nodes
-    edges.value = normalized.edges
-    fileName.value = data.filePath || ''
+    modules.value = data.nodes || []
+    relations.value = data.edges || []
+    stats.value = data.stats || { packages: 0, classes: 0, javaFiles: 0, relations: 0 }
+    projectName.value = data.projectName || ''
 
-    if (!selectedId.value || !nodes.value.some((n) => n.id === selectedId.value)) {
-      selectedId.value = ''
-    }
+    if (!modules.value.some((n) => n.id === selectedId.value)) selectedId.value = ''
   } catch (e) {
     if (e.name === 'AbortError') return
-    error.value = '无法连接插件服务，请确认插件已启动且左侧打开了 Java 文件'
-    nodes.value = []
-    edges.value = []
+    error.value = '连不上插件服务（127.0.0.1:8899）。请确认插件已启动、右侧工具窗已打开。'
+    modules.value = []
+    relations.value = []
     console.error(e)
   } finally {
     loading.value = false
@@ -440,7 +446,7 @@ onBeforeUnmount(() => {
 .container {
   width: 100%;
   height: 100vh;
-  background: linear-gradient(135deg, #0a1929 0%, #0d2818 100%);
+  background: linear-gradient(135deg, #08161f 0%, #0b211a 100%);
   color: #e0f7fa;
   display: flex;
   flex-direction: column;
@@ -453,9 +459,10 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding: 12px 20px;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.18);
-  background: rgba(0, 0, 0, 0.32);
+  padding: 11px 20px;
+  border-bottom: 1px solid rgba(0, 229, 255, 0.16);
+  background: rgba(0, 0, 0, 0.34);
+  flex-shrink: 0;
 }
 
 .brand {
@@ -467,19 +474,18 @@ onBeforeUnmount(() => {
 
 .title {
   margin: 0;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
   background: linear-gradient(90deg, #00e5ff, #00ffcc);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  letter-spacing: 0.5px;
   white-space: nowrap;
 }
 
 .subtitle {
   font-size: 11px;
-  color: #5f8a86;
+  color: #5a8a84;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -524,7 +530,7 @@ onBeforeUnmount(() => {
 }
 
 .refresh-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -538,146 +544,162 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   display: block;
-  cursor: default;
 }
 
-/* ---- 边 ---- */
 .edge {
-  stroke: #1f4a45;
-  stroke-width: 1.4;
-  transition: stroke 0.2s, stroke-width 0.2s;
-}
-
-.edge-method {
   stroke: #1d5f57;
+  stroke-width: 1.3;
+  color: #00e5ff;
+  opacity: 0.55;
+  transition: opacity 0.2s, stroke-width 0.2s;
 }
 
-.edge-field {
-  stroke: #3a3163;
+.edge-extends {
+  stroke: #ffb74d;
+  color: #ffb74d;
 }
 
-.edge-call {
-  stroke: #0e6f78;
-  stroke-dasharray: 5 4;
+.edge-implements {
+  stroke: #b39ddb;
+  color: #b39ddb;
+  stroke-dasharray: 6 3;
+}
+
+.edge-uses {
+  stroke: #2e8b84;
+  color: #2e8b84;
+  stroke-dasharray: 3 3;
 }
 
 .edge.active {
-  stroke: #00ffcc;
+  opacity: 1;
   stroke-width: 2.2;
 }
 
-/* ---- 节点 ---- */
-.node {
+.edge-label {
+  fill: #6fa8a2;
+  font-size: 10.5px;
+  paint-order: stroke;
+  stroke: #08161f;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.edge-label.active {
+  fill: #00ffcc;
+}
+
+.module {
   cursor: pointer;
 }
 
-.node .node-label {
-  fill: #e6fffb;
-  font-size: 13px;
+.module.selected rect:first-of-type {
+  filter: drop-shadow(0 0 8px rgba(0, 255, 204, 0.5));
+}
+
+.m-name {
+  fill: #7ffce8;
+  font-size: 14.5px;
+  font-weight: 600;
   font-family: Consolas, 'Cascadia Mono', monospace;
   pointer-events: none;
 }
 
-.node .node-type {
+.m-role {
+  fill: #cdeee9;
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.m-pkg {
   fill: #4f8f88;
   font-size: 9.5px;
-  letter-spacing: 0.8px;
   font-family: Consolas, monospace;
   pointer-events: none;
 }
 
-.node.dim {
-  opacity: 0.34;
+.m-desc {
+  fill: #a8ccc7;
+  font-size: 11px;
+  pointer-events: none;
 }
 
-.node.selected rect {
-  filter: drop-shadow(0 0 6px rgba(0, 255, 204, 0.55));
+.m-desc.issue {
+  fill: #ff8a80;
 }
 
-.dot-pending {
-  fill: #ffb74d;
+.m-stat {
+  fill: #3f6b66;
+  font-size: 9.5px;
+  font-family: Consolas, monospace;
+  pointer-events: none;
 }
 
-/* ---- 详情侧栏 ---- */
 .inspector {
-  width: 268px;
+  width: 262px;
   flex-shrink: 0;
-  border-left: 1px solid rgba(0, 229, 255, 0.16);
-  background: rgba(0, 0, 0, 0.28);
+  border-left: 1px solid rgba(0, 229, 255, 0.14);
+  background: rgba(0, 0, 0, 0.3);
   padding: 14px 16px;
   overflow-y: auto;
   font-size: 12.5px;
 }
 
 .ins-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .badge {
-  padding: 1px 7px;
+  padding: 1px 8px;
   border-radius: 3px;
   font-size: 10px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: #eafffb;
+  background: rgba(0, 255, 204, 0.14);
+  color: #4dd0b1;
 }
 
-.badge-class { background: #00695c; }
-.badge-method { background: #01579b; }
-.badge-field { background: #4a148c; }
-
-.ins-title {
+.ins-name {
+  margin: 0 0 8px;
   font-family: Consolas, monospace;
-  font-size: 14px;
+  font-size: 12.5px;
   color: #7ffce8;
   word-break: break-all;
-}
-
-.ins-row {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
-  line-height: 1.55;
-}
-
-.ins-key {
-  flex-shrink: 0;
-  width: 34px;
-  color: #4f8f88;
-  font-size: 11.5px;
-}
-
-.ins-val {
-  color: #cdeee9;
-  word-break: break-word;
-}
-
-.ins-val.muted {
-  color: #8a6d3b;
-}
-
-.mono {
-  font-family: Consolas, monospace;
-  font-size: 11.5px;
-}
-
-.ins-src {
-  margin: 14px 0 0;
-  padding: 10px;
-  max-height: 300px;
-  overflow: auto;
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(0, 229, 255, 0.12);
-  border-radius: 5px;
-  font-family: Consolas, monospace;
-  font-size: 11px;
   line-height: 1.5;
+}
+
+.ins-desc {
+  margin: 0 0 16px;
+  color: #a8ccc7;
+  line-height: 1.6;
+}
+
+.ins-label {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #4f8f88;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(0, 229, 255, 0.07);
+  border: 1px solid rgba(0, 229, 255, 0.14);
   color: #9fd8d2;
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-family: Consolas, monospace;
+  font-size: 10.5px;
+}
+
+.ins-issues {
+  margin: 0;
+  padding-left: 16px;
+  color: #ff8a80;
+  line-height: 1.6;
 }
 
 .ins-hint {
@@ -688,7 +710,6 @@ onBeforeUnmount(() => {
   padding-top: 40px;
 }
 
-/* ---- 空态 / 错误态 ---- */
 .empty,
 .error-box {
   flex: 1;
@@ -703,7 +724,7 @@ onBeforeUnmount(() => {
 
 .empty-main {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   color: #80cbc4;
 }
 
@@ -719,15 +740,16 @@ onBeforeUnmount(() => {
 
 .error-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .error-msg {
   margin: 0;
   font-size: 12.5px;
   color: #c98b86;
-  max-width: 520px;
+  max-width: 560px;
   line-height: 1.6;
+  word-break: break-word;
 }
 
 .ghost-btn {
@@ -745,39 +767,29 @@ onBeforeUnmount(() => {
   background: rgba(255, 138, 128, 0.1);
 }
 
-/* ---- 底部图例 ---- */
 .legend {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 18px;
   padding: 7px 20px;
-  border-top: 1px solid rgba(0, 229, 255, 0.16);
+  border-top: 1px solid rgba(0, 229, 255, 0.14);
   font-size: 11.5px;
   color: #6fa8a2;
-  background: rgba(0, 0, 0, 0.32);
+  background: rgba(0, 0, 0, 0.34);
+  flex-shrink: 0;
 }
 
-.dot {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  margin-right: 6px;
-  vertical-align: middle;
-}
-
-.dot.class { background: #00695c; }
-.dot.method { background: #01579b; }
-.dot.field { background: #4a148c; }
-
-.line {
+.lg {
   display: inline-block;
   width: 16px;
   height: 0;
-  border-top: 1.5px dashed #0e6f78;
   margin-right: 6px;
   vertical-align: middle;
 }
+
+.lg-extends { border-top: 1.6px solid #ffb74d; }
+.lg-implements { border-top: 1.6px dashed #b39ddb; }
+.lg-uses { border-top: 1.6px dotted #2e8b84; }
 
 .count {
   margin-left: auto;
