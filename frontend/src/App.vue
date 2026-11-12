@@ -17,7 +17,7 @@
           :title="aiStatus.configured
             ? '让 AI 生成每个模块的用途与关系说明'
             : '请先点击右侧「AI 设置」配置 API Key'"
-          @click="startAi"
+          @click="startAi()"
         >
           {{ aiStatus.phase === 'running' ? '分析中...' : 'AI 生成语义' }}
         </button>
@@ -35,7 +35,7 @@
 
     <div v-if="aiStatus.phase === 'error' && aiStatus.error" class="ai-error">
       <span class="ai-error-text">{{ aiStatus.error }}</span>
-      <button class="ghost-btn" @click="startAi">重试</button>
+      <button class="ghost-btn" @click="startAi()">重试</button>
       <button class="ghost-btn" @click="resetAi">清除</button>
     </div>
 
@@ -56,7 +56,12 @@
     </div>
 
     <div v-else class="stage">
-      <svg class="canvas" :viewBox="viewBox" xmlns="http://www.w3.org/2000/svg">
+      <svg
+        class="canvas"
+        :viewBox="viewBox"
+        xmlns="http://www.w3.org/2000/svg"
+        @contextmenu.prevent="openMenu($event, null)"
+      >
         <defs>
           <marker
             id="arrow"
@@ -94,6 +99,7 @@
           class="module"
           :class="{ selected: m.node.id === selectedId }"
           @click="selectedId = m.node.id"
+          @contextmenu.prevent.stop="openMenu($event, m.node.id)"
         >
           <rect
             :x="m.x"
@@ -183,6 +189,19 @@
       <span><i class="lg lg-uses"></i>依赖</span>
       <span class="count">{{ footerStats }}{{ cacheLabel }}</span>
     </footer>
+
+    <div
+      v-if="menu.open"
+      class="ctx-menu"
+      :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
+      @click.stop
+    >
+      <button v-if="menu.moduleId" class="ctx-item" @click="regenerateOne(menu.moduleId)">
+        重新生成此模块
+      </button>
+      <button class="ctx-item" @click="regenerateAll">重新生成全部</button>
+      <button class="ctx-item danger" @click="clearCache">清除全部缓存</button>
+    </div>
   </div>
 </template>
 
@@ -479,12 +498,20 @@ async function fetchAiStatus() {
   }
 }
 
-async function startAi() {
+async function startAi(mode = 'incremental', moduleId = '') {
   if (aiStatus.value.phase === 'running') return
+  closeMenu()
   aiStatus.value = { ...aiStatus.value, phase: 'running', error: '', message: '提交中...' }
 
+  let url = `${API}/api/ai/analyze`
+  if (mode === 'forceAll') {
+    url += '?mode=forceAll'
+  } else if (mode === 'forceOne') {
+    url += `?mode=forceOne&moduleId=${encodeURIComponent(moduleId)}`
+  }
+
   try {
-    const res = await fetch(`${API}/api/ai/analyze`, { method: 'POST' })
+    const res = await fetch(url, { method: 'POST' })
     aiStatus.value = await res.json()
   } catch (e) {
     aiStatus.value = { ...aiStatus.value, phase: 'error', error: '提交 AI 任务失败：' + e.message }
@@ -492,6 +519,34 @@ async function startAi() {
   }
 
   pollAi()
+}
+
+/* ------------------------------ 右键菜单 ------------------------------ */
+
+const menu = ref({ open: false, x: 0, y: 0, moduleId: '' })
+
+function openMenu(event, moduleId) {
+  // 贴着视口边缘时往回挪，避免菜单跑出屏幕
+  const x = Math.min(event.clientX, window.innerWidth - 190)
+  const y = Math.min(event.clientY, window.innerHeight - 120)
+  menu.value = { open: true, x, y, moduleId: moduleId || '' }
+}
+
+function closeMenu() {
+  if (menu.value.open) menu.value = { ...menu.value, open: false }
+}
+
+function regenerateOne(moduleId) {
+  startAi('forceOne', moduleId)
+}
+
+function regenerateAll() {
+  startAi('forceAll')
+}
+
+async function clearCache() {
+  closeMenu()
+  await resetAi()
 }
 
 function pollAi() {
@@ -583,15 +638,23 @@ watch(autoRefresh, (on) => {
   if (on) timer = setInterval(fetchData, 5000)
 })
 
+function onGlobalKey(event) {
+  if (event.key === 'Escape') closeMenu()
+}
+
 onMounted(() => {
   fetchData()
   fetchAiStatus()
+  window.addEventListener('click', closeMenu)
+  window.addEventListener('keydown', onGlobalKey)
 })
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
   if (aiTimer) clearInterval(aiTimer)
   if (controller) controller.abort()
+  window.removeEventListener('click', closeMenu)
+  window.removeEventListener('keydown', onGlobalKey)
 })
 </script>
 
@@ -1076,5 +1139,44 @@ onBeforeUnmount(() => {
 .count {
   margin-left: auto;
   color: #00e5ff;
+}
+
+/* ---- 右键菜单 ---- */
+.ctx-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 172px;
+  padding: 4px;
+  background: #11252b;
+  border: 1px solid rgba(0, 229, 255, 0.26);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+}
+
+.ctx-item {
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #cdeee9;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ctx-item:hover {
+  background: rgba(0, 229, 255, 0.12);
+  color: #eafffb;
+}
+
+.ctx-item.danger {
+  color: #ff9e94;
+}
+
+.ctx-item.danger:hover {
+  background: rgba(211, 47, 47, 0.16);
 }
 </style>

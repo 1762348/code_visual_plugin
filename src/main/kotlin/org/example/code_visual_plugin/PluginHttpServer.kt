@@ -50,7 +50,8 @@ object PluginHttpServer {
                 response: HttpServletResponse
             ) {
                 baseRequest.isHandled = true
-                route(target, response)
+                // Jetty 的 target 不含 query，必须从 servlet request 上取
+                route(target, request.queryString, response)
             }
         }
 
@@ -76,7 +77,7 @@ object PluginHttpServer {
 
     // ---------------------------------------------------------------- 路由
 
-    private fun route(target: String, response: HttpServletResponse) {
+    private fun route(target: String, query: String?, response: HttpServletResponse) {
         response.contentType = "application/json;charset=UTF-8"
         response.setHeader("Access-Control-Allow-Origin", "*")
         response.setHeader("Cache-Control", "no-store")
@@ -88,7 +89,14 @@ object PluginHttpServer {
                 path == "/api/projectGraph" -> write(response, buildProjectGraphJson())
                 path == "/api/ai/status" -> write(response, gson.toJson(AiJobs.status()))
                 path == "/api/ai/analyze" -> {
-                    project?.let { AiJobs.start(it) }
+                    val p = project
+                    if (p != null) {
+                        when (queryParam(query, "mode")) {
+                            "forceAll" -> AiJobs.start(p, AiJobs.Mode.FORCE_ALL)
+                            "forceOne" -> AiJobs.start(p, AiJobs.Mode.FORCE_ONE, queryParam(query, "moduleId"))
+                            else -> AiJobs.start(p)
+                        }
+                    }
                     write(response, gson.toJson(AiJobs.status()))
                 }
                 path == "/api/ai/reset" -> {
@@ -119,6 +127,22 @@ object PluginHttpServer {
 
     private fun describe(e: Throwable): String =
         (e.javaClass.simpleName + ": " + (e.message ?: "无详细信息"))
+
+    /** 极简 query 解析：mode=forceOne&moduleId=xxx */
+    private fun queryParam(query: String?, name: String): String? {
+        if (query.isNullOrEmpty()) return null
+        for (pair in query.split('&')) {
+            if (pair.substringBefore('=') == name) {
+                val raw = pair.substringAfter('=', "")
+                return try {
+                    java.net.URLDecoder.decode(raw, "UTF-8")
+                } catch (e: Throwable) {
+                    raw
+                }
+            }
+        }
+        return null
+    }
 
     private fun buildProjectGraphJson(): String {
         val p = project ?: return gson.toJson(

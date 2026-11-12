@@ -22,6 +22,9 @@ object AiJobs {
 
     enum class Phase { IDLE, RUNNING, DONE, ERROR }
 
+    /** 分析模式：默认增量，也可以强制重算某一部分 */
+    enum class Mode { INCREMENTAL, FORCE_ALL, FORCE_ONE }
+
     @Volatile
     private var phase: Phase = Phase.IDLE
 
@@ -50,7 +53,7 @@ object AiJobs {
         AiCacheStore.clear()
     }
 
-    fun start(project: Project) {
+    fun start(project: Project, mode: Mode = Mode.INCREMENTAL, targetId: String? = null) {
         if (phase == Phase.RUNNING) return
 
         if (!AiSettings.getInstance().state.enabled) {
@@ -63,6 +66,11 @@ object AiJobs {
             error = "还没有配置 API Key。请到 Settings → Tools → CodeCanvas AI 填写。"
             return
         }
+        if (mode == Mode.FORCE_ONE && targetId.isNullOrBlank()) {
+            phase = Phase.ERROR
+            error = "没有指定要重算的模块。"
+            return
+        }
 
         phase = Phase.RUNNING
         error = null
@@ -70,7 +78,7 @@ object AiJobs {
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                runIncremental(project)
+                runIncremental(project, mode, targetId)
             } catch (e: Throwable) {
                 error = e.message ?: (e.javaClass.simpleName + "（无详细信息）")
                 message = ""
@@ -79,7 +87,7 @@ object AiJobs {
         }
     }
 
-    private fun runIncremental(project: Project) {
+    private fun runIncremental(project: Project, mode: Mode, targetId: String?) {
         val graph = ModuleScanService.build(project)
         if (!graph.success) throw AiException(graph.message)
 
@@ -89,10 +97,15 @@ object AiJobs {
         val model = AiSettings.getInstance().state.model
         val modelChanged = AiCacheStore.currentModel().isNotEmpty() && AiCacheStore.currentModel() != model
 
-        val targets = if (modelChanged) {
-            graph.nodes
-        } else {
-            graph.nodes.filter { AiCacheStore.hashOfEntry(it.id) != AiCacheStore.hashOf(it) }
+        val targets = when (mode) {
+            Mode.FORCE_ALL -> graph.nodes
+            Mode.FORCE_ONE -> graph.nodes.filter { it.id == targetId }
+                .ifEmpty { throw AiException("项目里没有找到模块：$targetId") }
+            Mode.INCREMENTAL -> if (modelChanged) {
+                graph.nodes
+            } else {
+                graph.nodes.filter { AiCacheStore.hashOfEntry(it.id) != AiCacheStore.hashOf(it) }
+            }
         }
 
         if (targets.isEmpty()) {
@@ -101,7 +114,11 @@ object AiJobs {
             return
         }
 
-        message = "共 ${graph.nodes.size} 个模块，需更新 ${targets.size} 个，正在请求 AI..."
+        message = when (mode) {
+            Mode.FORCE_ALL -> "强制重算全部 ${targets.size} 个模块，正在请求 AI..."
+            Mode.FORCE_ONE -> "重算模块「${targets.first().shortName}」，正在请求 AI..."
+            Mode.INCREMENTAL -> "共 ${graph.nodes.size} 个模块，需更新 ${targets.size} 个，正在请求 AI..."
+        }
 
         val payload = ModuleAiService.analyze(graph, targets)
         val allIds = graph.nodes.map { it.id }.toSet()
