@@ -11,7 +11,7 @@ import jakarta.servlet.http.HttpServletResponse
 import org.eclipse.jetty.server.Request
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.handler.AbstractHandler
-import org.example.code_visual_plugin.ai.AiCache
+import org.example.code_visual_plugin.ai.AiCacheStore
 import org.example.code_visual_plugin.ai.AiJobs
 
 /**
@@ -126,7 +126,12 @@ object PluginHttpServer {
         )
         return try {
             val graph = ModuleScanService.build(p)
-            gson.toJson(if (graph.success) AiCache.applyTo(graph) else graph)
+            if (!graph.success) {
+                gson.toJson(graph)
+            } else {
+                AiCacheStore.use(p)
+                gson.toJson(AiCacheStore.applyTo(graph))
+            }
         } catch (e: Throwable) {
             log.error("buildProjectGraph failed", e)
             gson.toJson(ProjectGraph(success = false, projectName = p.name, message = describe(e)))

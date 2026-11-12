@@ -181,7 +181,7 @@
       <span><i class="lg lg-extends"></i>继承</span>
       <span><i class="lg lg-implements"></i>实现</span>
       <span><i class="lg lg-uses"></i>依赖</span>
-      <span class="count">{{ footerStats }}</span>
+      <span class="count">{{ footerStats }}{{ cacheLabel }}</span>
     </footer>
   </div>
 </template>
@@ -212,6 +212,8 @@ const aiStatus = ref({
   phase: 'idle',
   error: '',
   message: '',
+  cached: 0,
+  total: 0,
 })
 
 let timer = null
@@ -227,6 +229,12 @@ const subtitle = computed(() =>
 const footerStats = computed(
   () =>
     `${stats.value.modules} 模块 · ${stats.value.files} 文件 · ${stats.value.lines} 行 · ${stats.value.relations} 关系`,
+)
+
+const cacheLabel = computed(() =>
+  aiStatus.value.total > 0
+    ? ` · AI 缓存 ${aiStatus.value.cached}/${aiStatus.value.total}`
+    : '',
 )
 
 /* ------------------------------ 文本工具 ------------------------------ */

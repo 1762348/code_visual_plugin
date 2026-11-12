@@ -2,6 +2,7 @@ package org.example.code_visual_plugin.ai
 
 import com.google.gson.Gson
 import org.example.code_visual_plugin.ProjectGraph
+import org.example.code_visual_plugin.ProjectModule
 
 /**
  * 把结构事实喂给模型，换回「模块作用」和「关系说明」。
@@ -29,34 +30,27 @@ object ModuleAiService {
 
     data class AiPayload(val modules: List<AiModule> = emptyList())
 
-    fun analyze(graph: ProjectGraph): ProjectGraph {
-        val (system, user) = buildPrompt(graph)
+    /**
+     * 只分析 [targets] 里的模块（增量）。结果不写缓存，由调用方决定如何落盘。
+     */
+    fun analyze(graph: ProjectGraph, targets: List<ProjectModule>): AiPayload {
+        if (targets.isEmpty()) return AiPayload()
+
+        val (system, user) = buildPrompt(graph, targets)
         val raw = AiClient.chat(system, user)
         val payload = parse(raw)
 
-        val known = graph.nodes.map { it.id }.toSet()
-        val valid = payload.modules.filter { it.id in known }
+        val allowed = targets.map { it.id }.toSet()
+        val valid = payload.modules.filter { it.id in allowed }
         if (valid.isEmpty()) {
-            throw AiException("AI 返回的模块 id 与当前项目对不上。原始输出前 300 字：" + raw.take(300))
+            throw AiException("AI 返回的模块 id 与本次请求对不上。原始输出前 300 字：" + raw.take(300))
         }
-
-        AiCache.clear()
-        for (module in valid) {
-            AiCache.putPurpose(module.id, module.purpose)
-            AiCache.putAdvice(module.id, module.fix)
-            for (relation in module.relations) {
-                if (relation.to in known) {
-                    AiCache.putNote(module.id, relation.to, relation.note)
-                }
-            }
-        }
-
-        return AiCache.applyTo(graph)
+        return AiPayload(valid)
     }
 
     // ------------------------------------------------------------ prompt
 
-    private fun buildPrompt(graph: ProjectGraph): Pair<String, String> {
+    private fun buildPrompt(graph: ProjectGraph, targets: List<ProjectModule>): Pair<String, String> {
         val system = """
             你是一名资深软件架构师，正在帮开发者理解一个陌生项目的结构。
 
@@ -73,13 +67,14 @@ object ModuleAiService {
             {"modules":[{"id":"模块id","purpose":"用途","fix":"修复建议或空串","relations":[{"to":"目标模块id","note":"关系说明"}]}]}
         """.trimIndent()
 
-        val modules = graph.nodes.sortedByDescending { it.lineCount }.take(MAX_MODULES)
+        val modules = targets.take(MAX_MODULES)
         val allowedIds = modules.map { it.id }.toSet()
 
         val sb = StringBuilder()
         sb.appendLine("项目：${graph.projectName}")
         sb.appendLine("语言：${graph.stats.languages.joinToString(" / ")}")
-        sb.appendLine("模块数：${graph.nodes.size}，文件数：${graph.stats.files}，总行数：${graph.stats.lines}")
+        sb.appendLine("全项目：${graph.nodes.size} 个模块，${graph.stats.files} 个文件，${graph.stats.lines} 行")
+        sb.appendLine("本次只提供其中 ${modules.size} 个模块（其余语义已缓存，无需重复给出）。")
         sb.appendLine()
         sb.appendLine("模块清单（id | 路径 | 语言 | 文件数 | 行数 | 代表文件）：")
 
@@ -92,7 +87,7 @@ object ModuleAiService {
         }
 
         val edges = graph.edges
-            .filter { it.from in allowedIds && it.to in allowedIds }
+            .filter { it.from in allowedIds }
             .take(MAX_RELATIONS)
 
         if (edges.isNotEmpty()) {

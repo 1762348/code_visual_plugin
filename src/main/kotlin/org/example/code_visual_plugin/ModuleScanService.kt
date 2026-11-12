@@ -51,6 +51,7 @@ data class ProjectModule(
     val descState: String = "structural",
     val fileCount: Int = 0,
     val lineCount: Int = 0,
+    val bytes: Long = 0,
     val language: String = "",
     val issues: List<String> = emptyList(),
     val advice: String = "",
@@ -112,7 +113,8 @@ object ModuleScanService {
         val fileName: String,
         val language: String,
         val text: String,
-        val issues: List<String>
+        val issues: List<String>,
+        val size: Long
     )
 
     private fun doBuild(project: Project): ProjectGraph {
@@ -182,7 +184,7 @@ object ModuleScanService {
                 emptyList()
             }
 
-            hits.add(Hit(modulePathOf(index, vf), vf.name, language, text, issues))
+            hits.add(Hit(modulePathOf(index, vf), vf.name, language, text, issues, vf.length))
             true
         }
 
@@ -268,6 +270,7 @@ object ModuleScanService {
             descState = if (allIssues.isNotEmpty()) "error" else "structural",
             fileCount = files.size,
             lineCount = lines,
+            bytes = files.sumOf { it.size },
             language = language,
             issues = allIssues.take(6),
             files = files.map { it.fileName }.sorted().distinct().take(80)
