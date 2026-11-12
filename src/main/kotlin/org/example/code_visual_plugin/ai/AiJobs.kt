@@ -96,12 +96,14 @@ object AiJobs {
 
         val model = AiSettings.getInstance().state.model
         val modelChanged = AiCacheStore.currentModel().isNotEmpty() && AiCacheStore.currentModel() != model
+        // 0 表示旧版本留下的缓存（没记过 prompt 版本），同样要作废
+        val promptChanged = AiCacheStore.currentPromptVersion() != AiCacheStore.PROMPT_VERSION
 
         val targets = when (mode) {
             Mode.FORCE_ALL -> graph.nodes
             Mode.FORCE_ONE -> graph.nodes.filter { it.id == targetId }
                 .ifEmpty { throw AiException("项目里没有找到模块：$targetId") }
-            Mode.INCREMENTAL -> if (modelChanged) {
+            Mode.INCREMENTAL -> if (modelChanged || promptChanged) {
                 graph.nodes
             } else {
                 graph.nodes.filter { AiCacheStore.hashOfEntry(it.id) != AiCacheStore.hashOf(it) }

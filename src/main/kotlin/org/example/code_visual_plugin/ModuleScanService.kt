@@ -55,6 +55,7 @@ data class ProjectModule(
     val language: String = "",
     val issues: List<String> = emptyList(),
     val advice: String = "",
+    val signatures: List<String> = emptyList(),
     val files: List<String> = emptyList()
 )
 
@@ -283,6 +284,11 @@ object ModuleScanService {
         val role = roleOf(shortName)
         val allIssues = files.flatMap { it.issues }
 
+        // 签名线索：按文件体积降序取前 3 个，通常最大的就是入口
+        val signatures = SignatureExtractor.forModule(
+            files.sortedByDescending { it.size }.map { it.fileName to it.text }
+        )
+
         return ProjectModule(
             id = "mod:$path",
             name = path,
@@ -299,6 +305,7 @@ object ModuleScanService {
             bytes = files.sumOf { it.size },
             language = language,
             issues = allIssues.take(6),
+            signatures = signatures,
             files = files.map { it.fileName }.sorted().distinct().take(80)
         )
     }

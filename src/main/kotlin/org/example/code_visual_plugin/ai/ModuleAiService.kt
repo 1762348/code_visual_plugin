@@ -59,9 +59,12 @@ object ModuleAiService {
 
             1. 每个模块的用途：一句中文，不超过 40 字，说清"它负责什么、处理什么数据"。
                不要复述文件数、行数这类数字，不要用"该模块"开头。
+               如果模块下面给了「签名」，据此判断它实际承担的操作，而不是只看目录名。
             2. 如果某个模块下面列出了「问题」，请在 fix 字段给出一条具体修复建议，不超过 50 字。
                没有问题的模块，fix 必须是空字符串。
-            3. 关键依赖关系的说明：一句中文，不超过 25 字，说清"传了什么数据、做了什么处理"。
+            3. 关键依赖关系的说明：一句中文，不超过 30 字。
+               结合「签名」里的方法名和参数，说清"把什么数据交给了谁、对方做了什么处理"，
+               例如「把订单 id 交给 OrderRepo.save 落库」。不要只写"调用了对方模块"。
 
             只输出 JSON，不要 markdown 代码块，不要任何解释文字。格式：
             {"modules":[{"id":"模块id","purpose":"用途","fix":"修复建议或空串","relations":[{"to":"目标模块id","note":"关系说明"}]}]}
@@ -81,6 +84,9 @@ object ModuleAiService {
         for (m in modules) {
             val files = m.files.take(MAX_FILES_PER_MODULE).joinToString(", ")
             sb.appendLine("- ${m.id} | ${m.name} | ${m.language} | ${m.fileCount} | ${m.lineCount} | $files")
+            if (m.signatures.isNotEmpty()) {
+                sb.appendLine("  签名：" + m.signatures.take(8).joinToString(" ; "))
+            }
             if (m.issues.isNotEmpty()) {
                 sb.appendLine("  问题：" + m.issues.take(4).joinToString("；"))
             }

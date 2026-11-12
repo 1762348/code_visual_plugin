@@ -29,6 +29,14 @@ object AiCacheStore {
     private val log = Logger.getInstance(AiCacheStore::class.java)
     private val gson = Gson()
 
+    /**
+     * Prompt 版本。改了 prompt 结构就 +1，旧缓存全部作废重算，
+     * 否则老口径的结论文案会和新口径混在一起。
+     *   v1 → 只有目录结构
+     *   v2 → 加入方法签名
+     */
+    const val PROMPT_VERSION = 2
+
     /** 单模块的缓存记录 */
     data class Entry(
         val purpose: String = "",
@@ -43,6 +51,7 @@ object AiCacheStore {
     private data class Snapshot(
         val version: Int = 1,
         var model: String = "",
+        var promptVersion: Int = 0,
         var savedAt: Long = 0L,
         val entries: LinkedHashMap<String, Entry> = LinkedHashMap(),
         val notes: LinkedHashMap<String, NoteEntry> = LinkedHashMap()
@@ -92,6 +101,7 @@ object AiCacheStore {
             if (parsed == null) Snapshot() else Snapshot(
                 version = parsed.version,
                 model = parsed.model ?: "",
+                promptVersion = parsed.promptVersion,
                 savedAt = parsed.savedAt,
                 entries = LinkedHashMap(parsed.entries ?: emptyMap()),
                 notes = LinkedHashMap(parsed.notes ?: emptyMap())
@@ -130,6 +140,9 @@ object AiCacheStore {
     @Synchronized
     fun currentModel(): String = snapshot.model
 
+    @Synchronized
+    fun currentPromptVersion(): Int = snapshot.promptVersion
+
     // ------------------------------------------------------------ 读
 
     @Synchronized
@@ -167,6 +180,7 @@ object AiCacheStore {
             snapshot.notes.clear()
             snapshot.model = model
         }
+        snapshot.promptVersion = PROMPT_VERSION
 
         val now = System.currentTimeMillis()
         for (update in updates) {
