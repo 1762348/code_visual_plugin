@@ -113,6 +113,10 @@ object PluginHttpServer {
                     }
                     write(response, gson.toJson(mapOf("ok" to (p != null))))
                 }
+                path == "/api/open" -> write(
+                    response,
+                    gson.toJson(openInEditor(queryParam(query, "moduleId"), queryParam(query, "file")))
+                )
                 path == "/parseCurrentFile" -> write(response, parseCurrentFileJson())
                 else -> write(response, gson.toJson(mapOf("msg" to "plugin api ok")))
             }
@@ -160,6 +164,47 @@ object PluginHttpServer {
             log.error("buildProjectGraph failed", e)
             gson.toJson(ProjectGraph(success = false, projectName = p.name, message = describe(e)))
         }
+    }
+
+    /**
+     * 把模块里的某个文件在编辑器中打开。
+     * fileName 为空时打开该模块最大的文件（通常是最有代表性的入口）。
+     */
+    private fun openInEditor(moduleId: String?, fileName: String?): Map<String, Any?> {
+        val p = project ?: return mapOf("ok" to false, "msg" to "插件尚未绑定项目")
+        if (p.isDisposed) return mapOf("ok" to false, "msg" to "项目已关闭")
+        if (moduleId.isNullOrBlank()) return mapOf("ok" to false, "msg" to "缺少 moduleId")
+
+        val files = ModuleFileIndex.filesOf(moduleId)
+        if (files.isEmpty()) {
+            return mapOf("ok" to false, "msg" to "这个模块下没有可用文件，请先点一次刷新")
+        }
+
+        val target = if (fileName.isNullOrBlank()) {
+            files.maxByOrNull { it.length } ?: files.first()
+        } else {
+            files.firstOrNull { it.name == fileName } ?: (files.maxByOrNull { it.length } ?: files.first())
+        }
+
+        var opened: String? = null
+        var failure: String? = null
+
+        ApplicationManager.getApplication().invokeAndWait {
+            try {
+                com.intellij.openapi.fileEditor.OpenFileDescriptor(p, target).navigate(true)
+                opened = FileEditorManager.getInstance(p).selectedFiles.firstOrNull()?.path
+            } catch (e: Throwable) {
+                failure = describe(e)
+            }
+        }
+
+        if (failure != null) return mapOf("ok" to false, "msg" to failure)
+        return mapOf(
+            "ok" to true,
+            "file" to target.name,
+            "path" to target.path,
+            "selected" to opened
+        )
     }
 
     private fun parseCurrentFileJson(): String {

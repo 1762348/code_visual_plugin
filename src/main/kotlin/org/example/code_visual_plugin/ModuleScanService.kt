@@ -65,6 +65,28 @@ data class ModuleRelation(
     val label: String
 )
 
+/**
+ * 最近一次扫描得到的「模块 → 文件」索引。
+ *
+ * 只存在内存里：既避免把本机绝对路径写进发给前端的 JSON，
+ * 又能在用户点击节点时立刻拿到 VirtualFile 做跳转，无需重新扫描。
+ */
+object ModuleFileIndex {
+
+    @Volatile
+    private var byModule: Map<String, List<VirtualFile>> = emptyMap()
+
+    fun update(index: Map<String, List<VirtualFile>>) {
+        byModule = index
+    }
+
+    fun filesOf(moduleId: String): List<VirtualFile> {
+        val key = moduleId.removePrefix("mod:")
+        val files = byModule[key] ?: return emptyList()
+        return files.filter { it.isValid }
+    }
+}
+
 object ModuleScanService {
 
     private const val MAX_FILES = 4000
@@ -114,7 +136,8 @@ object ModuleScanService {
         val language: String,
         val text: String,
         val issues: List<String>,
-        val size: Long
+        val size: Long,
+        val file: VirtualFile
     )
 
     private fun doBuild(project: Project): ProjectGraph {
@@ -130,6 +153,9 @@ object ModuleScanService {
 
         val byModule = hits.groupBy { it.modulePath }
         val moduleIds = byModule.keys.associateWith { "mod:$it" }
+
+        // 留住文件引用，供前端点击跳转
+        ModuleFileIndex.update(byModule.mapValues { entry -> entry.value.map { it.file } })
 
         val nodes = byModule.entries.sortedBy { it.key }.map { (path, files) ->
             buildModule(path, files)
@@ -184,7 +210,7 @@ object ModuleScanService {
                 emptyList()
             }
 
-            hits.add(Hit(modulePathOf(index, vf), vf.name, language, text, issues, vf.length))
+            hits.add(Hit(modulePathOf(index, vf), vf.name, language, text, issues, vf.length, vf))
             true
         }
 

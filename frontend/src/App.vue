@@ -99,6 +99,7 @@
           class="module"
           :class="{ selected: m.node.id === selectedId }"
           @click="selectedId = m.node.id"
+          @dblclick="openInIde(m.node.id)"
           @contextmenu.prevent.stop="openMenu($event, m.node.id)"
         >
           <rect
@@ -169,9 +170,15 @@
             </ul>
           </template>
 
-          <p class="ins-label">文件（{{ selected.fileCount }}）</p>
+          <p class="ins-label">文件（{{ selected.fileCount }}）· 点击跳转</p>
           <div class="chips">
-            <span v-for="c in selected.files" :key="c" class="chip">{{ c }}</span>
+            <button
+              v-for="c in selected.files"
+              :key="c"
+              class="chip chip-btn"
+              :title="`在编辑器中打开 ${c}`"
+              @click="openInIde(selected.id, c)"
+            >{{ c }}</button>
           </div>
 
           <p v-if="selected.issues && selected.issues.length" class="ins-label">问题</p>
@@ -179,7 +186,7 @@
             <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
           </ul>
         </template>
-        <p v-else class="ins-hint">点击任意模块查看包内详情</p>
+        <p v-else class="ins-hint">点击模块看详情 · 双击跳转源码</p>
       </aside>
     </div>
 
@@ -202,6 +209,8 @@
       <button class="ctx-item" @click="regenerateAll">重新生成全部</button>
       <button class="ctx-item danger" @click="clearCache">清除全部缓存</button>
     </div>
+
+    <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>
 
@@ -542,6 +551,36 @@ function regenerateOne(moduleId) {
 
 function regenerateAll() {
   startAi('forceAll')
+}
+
+/* ------------------------------ 跳转源码 ------------------------------ */
+
+const toast = ref('')
+let toastTimer = null
+
+function showToast(text) {
+  toast.value = text
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toast.value = ''
+  }, 2400)
+}
+
+async function openInIde(moduleId, file = '') {
+  closeMenu()
+  try {
+    let url = `${API}/api/open?moduleId=${encodeURIComponent(moduleId)}`
+    if (file) url += `&file=${encodeURIComponent(file)}`
+    const res = await fetch(url, { method: 'POST' })
+    const data = await res.json()
+    if (data.ok) {
+      showToast(`已在编辑器打开 ${data.file || ''}`)
+    } else {
+      showToast(data.msg || '打开失败')
+    }
+  } catch (e) {
+    showToast('打开失败：' + e.message)
+  }
 }
 
 async function clearCache() {
@@ -1178,5 +1217,38 @@ onBeforeUnmount(() => {
 
 .ctx-item.danger:hover {
   background: rgba(211, 47, 47, 0.16);
+}
+
+/* ---- 文件 chip 可点击 ---- */
+.chip-btn {
+  cursor: pointer;
+  font-family: Consolas, monospace;
+  transition: all 0.15s;
+}
+
+.chip-btn:hover {
+  background: rgba(0, 229, 255, 0.18);
+  border-color: rgba(0, 229, 255, 0.45);
+  color: #eafffb;
+}
+
+/* ---- 轻提示 ---- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  background: rgba(11, 33, 26, 0.96);
+  border: 1px solid rgba(0, 255, 204, 0.45);
+  border-radius: 6px;
+  color: #9ff5e4;
+  font-size: 12.5px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 80vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>
