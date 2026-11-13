@@ -57,10 +57,14 @@
 
     <div v-else class="stage">
       <svg
+        ref="svgEl"
         class="canvas"
         :viewBox="viewBox"
         xmlns="http://www.w3.org/2000/svg"
+        :class="{ panning }"
         @contextmenu.prevent="openMenu($event, null)"
+        @wheel.prevent="onWheel"
+        @mousedown="onCanvasDown"
       >
         <defs>
           <marker
@@ -75,6 +79,8 @@
             <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
           </marker>
         </defs>
+
+        <g :transform="`translate(${view.x}, ${view.y}) scale(${view.k})`">
 
         <g v-for="r in routed" :key="r.key">
           <path
@@ -102,6 +108,9 @@
           @dblclick="openInIde(m.node.id)"
           @contextmenu.prevent.stop="openMenu($event, m.node.id)"
         >
+          <title>{{ m.node.name }}
+{{ m.node.desc }}
+{{ m.node.fileCount }} 文件 · {{ m.node.lineCount }} 行 · {{ m.node.language }}</title>
           <rect
             :x="m.x"
             :y="m.y"
@@ -145,7 +154,15 @@
             {{ m.node.fileCount }} 文件 · {{ m.node.lineCount }} 行
           </text>
         </g>
+        </g>
       </svg>
+
+      <div class="zoom-bar">
+        <button class="zoom-btn" title="放大" @click="zoomBy(1.2)">＋</button>
+        <button class="zoom-btn" title="缩小" @click="zoomBy(1 / 1.2)">－</button>
+        <button class="zoom-btn wide" title="适应窗口（Ctrl+0）" @click="resetView">适应</button>
+        <span class="zoom-val">{{ Math.round(view.k * 100) }}%</span>
+      </div>
 
       <aside class="inspector">
         <template v-if="selected">
@@ -215,7 +232,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 
 const API = 'http://127.0.0.1:8899'
 
@@ -224,6 +241,7 @@ const CARD_H = 112
 const GAP_X = 96
 const GAP_Y = 56
 const MAX_DESC_LINES = 2
+const MAX_PER_COLUMN = 4
 
 const modules = ref([])
 const relations = ref([])
@@ -369,28 +387,35 @@ const placed = computed(() => {
   if (!nodes.length) return []
 
   const layer = layerOf(nodes, relations.value)
-  const columns = new Map()
+  const byLayer = new Map()
   for (const n of nodes) {
     const l = layer.get(n.id) || 0
-    if (!columns.has(l)) columns.set(l, [])
-    columns.get(l).push(n)
+    if (!byLayer.has(l)) byLayer.set(l, [])
+    byLayer.get(l).push(n)
+  }
+
+  // 每层按包名排序；超过 MAX_PER_COLUMN 就拆成多列，
+  // 否则 10 个模块会摞成一根长条，自适应之后字小到看不清
+  const columns = []
+  for (const [, list] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
+    list.sort((a, b) => a.name.localeCompare(b.name))
+    for (let i = 0; i < list.length; i += MAX_PER_COLUMN) {
+      columns.push(list.slice(i, i + MAX_PER_COLUMN))
+    }
   }
 
   const result = []
-  for (const [l, list] of [...columns.entries()].sort((a, b) => a[0] - b[0])) {
-    // 同层内按包名排序，保证多次刷新位置稳定
-    list.sort((a, b) => a.name.localeCompare(b.name))
-    const total = list.length
-    list.forEach((node, i) => {
+  columns.forEach((col, ci) => {
+    col.forEach((node, ri) => {
       result.push({
         node,
-        x: l * (CARD_W + GAP_X),
-        y: (i - (total - 1) / 2) * (CARD_H + GAP_Y),
+        x: ci * (CARD_W + GAP_X),
+        y: (ri - (col.length - 1) / 2) * (CARD_H + GAP_Y),
         lines: wrapText(node.desc, 24).slice(0, MAX_DESC_LINES),
         roleWidth: 14 + node.role.length * 11,
       })
     })
-  }
+  })
   return result
 })
 
@@ -399,6 +424,78 @@ const boxById = computed(() => {
   for (const p of placed.value) m.set(p.node.id, p)
   return m
 })
+
+/* ------------------------------ 缩放 / 平移 ------------------------------ */
+
+const svgEl = ref(null)
+const view = reactive({ k: 1, x: 0, y: 0 })
+const panning = ref(false)
+let panStart = null
+
+/** 屏幕坐标 → viewBox 坐标（含 viewBox 的缩放偏移） */
+function toViewBox(evt) {
+  const svg = svgEl.value
+  if (!svg || !svg.getScreenCTM) return { x: 0, y: 0 }
+  const pt = svg.createSVGPoint()
+  pt.x = evt.clientX
+  pt.y = evt.clientY
+  return pt.matrixTransform(svg.getScreenCTM().inverse())
+}
+
+/** 以 (cx, cy) 为中心缩放，保持该点不动 */
+function applyZoom(cx, cy, nextK) {
+  const k = Math.min(4, Math.max(0.15, nextK))
+  if (k === view.k) return
+  view.x = cx - (cx - view.x) * (k / view.k)
+  view.y = cy - (cy - view.y) * (k / view.k)
+  view.k = k
+}
+
+function onWheel(evt) {
+  const p = toViewBox(evt)
+  const factor = evt.deltaY < 0 ? 1.12 : 1 / 1.12
+  applyZoom(p.x, p.y, view.k * factor)
+}
+
+function zoomBy(factor) {
+  const svg = svgEl.value
+  if (!svg) return
+  const r = svg.getBoundingClientRect()
+  const p = toViewBox({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })
+  applyZoom(p.x, p.y, view.k * factor)
+}
+
+function resetView() {
+  view.k = 1
+  view.x = 0
+  view.y = 0
+}
+
+function onCanvasDown(evt) {
+  if (evt.button !== 0) return
+  // 在模块卡片上按下不拖动画布（那是点击/双击语义）
+  if (evt.target.closest && evt.target.closest('.module')) return
+
+  panning.value = true
+  const p = toViewBox(evt)
+  panStart = { px: p.x, py: p.y, ox: view.x, oy: view.y }
+  window.addEventListener('mousemove', onPanMove)
+  window.addEventListener('mouseup', onPanUp)
+}
+
+function onPanMove(evt) {
+  if (!panStart) return
+  const p = toViewBox(evt)
+  view.x = panStart.ox + (p.x - panStart.px)
+  view.y = panStart.oy + (p.y - panStart.py)
+}
+
+function onPanUp() {
+  panning.value = false
+  panStart = null
+  window.removeEventListener('mousemove', onPanMove)
+  window.removeEventListener('mouseup', onPanUp)
+}
 
 const viewBox = computed(() => {
   const list = placed.value
@@ -679,6 +776,10 @@ watch(autoRefresh, (on) => {
 
 function onGlobalKey(event) {
   if (event.key === 'Escape') closeMenu()
+  if ((event.ctrlKey || event.metaKey) && event.key === '0') {
+    event.preventDefault()
+    resetView()
+  }
 }
 
 onMounted(() => {
@@ -692,6 +793,8 @@ onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
   if (aiTimer) clearInterval(aiTimer)
   if (controller) controller.abort()
+  if (toastTimer) clearTimeout(toastTimer)
+  onPanUp()
   window.removeEventListener('click', closeMenu)
   window.removeEventListener('keydown', onGlobalKey)
 })
@@ -873,12 +976,64 @@ onBeforeUnmount(() => {
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative;
 }
 
 .canvas {
   flex: 1;
   min-width: 0;
   display: block;
+  cursor: grab;
+  user-select: none;
+}
+
+.canvas.panning {
+  cursor: grabbing;
+}
+
+/* ---- 缩放工具条 ---- */
+.zoom-bar {
+  position: absolute;
+  right: 278px;
+  bottom: 44px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  background: rgba(8, 22, 31, 0.9);
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 6px;
+  z-index: 5;
+}
+
+.zoom-btn {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #9fd8d2;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.zoom-btn.wide {
+  font-size: 11.5px;
+}
+
+.zoom-btn:hover {
+  background: rgba(0, 229, 255, 0.14);
+  color: #eafffb;
+}
+
+.zoom-val {
+  min-width: 36px;
+  text-align: center;
+  font-size: 11px;
+  color: #6fa8a2;
+  font-family: Consolas, monospace;
 }
 
 .edge {

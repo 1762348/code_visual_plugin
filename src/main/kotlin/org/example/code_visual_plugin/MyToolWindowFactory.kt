@@ -11,6 +11,21 @@ import com.intellij.ui.jcef.JBCefBrowser
 
 class MyToolWindowFactory : ToolWindowFactory {
 
+    private companion object {
+        /** vite 开发服务器默认端口 */
+        const val DEV_SERVER_PORT = 5173
+
+        /** 极短的 TCP 探测：只判断端口是否有人监听，不发 HTTP 请求 */
+        fun isPortOpen(port: Int): Boolean = try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 120)
+                true
+            }
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
     override fun shouldBeAvailable(project: Project) = true
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -43,13 +58,16 @@ class MyToolWindowFactory : ToolWindowFactory {
             return
         }
 
-        // 开发模式：-Dcodecanvas.devServer=http://localhost:5173 走 vite 热更新
-        // 默认：直接读插件 jar 里的 web/ 产物，不依赖任何外部进程
-        val devServer = System.getProperty("codecanvas.devServer")?.trim()?.takeIf { it.isNotEmpty() }
-        val url = devServer ?: "http://127.0.0.1:${PluginHttpServer.PORT}/"
+        // 开发模式：
+        //   1. 显式指定 -Dcodecanvas.devServer=http://localhost:5173
+        //   2. 没有指定、但本机 5173 上跑着 vite，则自动切过去（改前端不用重装插件）
+        // 生产：直接读插件 jar 里的 web/ 产物，不依赖任何外部进程
+        val explicitDev = System.getProperty("codecanvas.devServer")?.trim()?.takeIf { it.isNotEmpty() }
+        val url = explicitDev
+            ?: if (isPortOpen(DEV_SERVER_PORT)) "http://127.0.0.1:$DEV_SERVER_PORT" else "http://127.0.0.1:${PluginHttpServer.PORT}/"
 
         Logger.getInstance(MyToolWindowFactory::class.java)
-            .info("CodeCanvas: loading $url (dev=${devServer != null})")
+            .info("CodeCanvas: loading $url (dev=${explicitDev != null || url.contains(":$DEV_SERVER_PORT")})")
 
         val browser = JBCefBrowser()
         browser.loadURL(url)
