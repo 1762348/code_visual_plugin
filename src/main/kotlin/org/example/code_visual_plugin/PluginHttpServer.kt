@@ -29,6 +29,9 @@ object PluginHttpServer {
 
     const val PORT = 8899
 
+    /** 只监听本机回环，避免源码暴露给局域网 */
+    private const val LOOPBACK = "127.0.0.1"
+
     private val log = Logger.getInstance(PluginHttpServer::class.java)
     private val gson = Gson()
 
@@ -41,7 +44,14 @@ object PluginHttpServer {
         project = projectRef
         if (isRunning) return
 
-        val s = Server(PORT)
+        // 只绑回环地址：以前用 Server(PORT) 会绑 0.0.0.0，同网段任何人都能读你的源码
+        val s = Server()
+        val connector = org.eclipse.jetty.server.ServerConnector(s).apply {
+            host = LOOPBACK
+            port = PORT
+            idleTimeout = 60_000
+        }
+        s.addConnector(connector)
         s.handler = object : AbstractHandler() {
             override fun handle(
                 target: String,
@@ -78,11 +88,22 @@ object PluginHttpServer {
     // ---------------------------------------------------------------- 路由
 
     private fun route(target: String, query: String?, response: HttpServletResponse) {
+        val path = target.substringBefore('?')
+
+        // 非 /api 的请求当作静态资源，直接从插件 jar 里的 web/ 目录读
+        if (!path.startsWith("/api/") && path != "/parseCurrentFile") {
+            try {
+                serveStatic(path, response)
+            } catch (e: Throwable) {
+                log.error("static $path failed", e)
+                safeText(response, 500, "静态资源读取失败：" + describe(e))
+            }
+            return
+        }
+
         response.contentType = "application/json;charset=UTF-8"
         response.setHeader("Access-Control-Allow-Origin", "*")
         response.setHeader("Cache-Control", "no-store")
-
-        val path = target.substringBefore('?')
 
         try {
             when {
@@ -231,6 +252,64 @@ object PluginHttpServer {
             }
         }
         return result
+    }
+
+    // ---------------------------------------------------------------- 静态资源
+
+    /**
+     * 从插件 jar 的 web/ 目录提供前端产物。
+     * 这样用户装上插件就能看到界面，不需要 Node、不需要 vite。
+     */
+    private fun serveStatic(path: String, response: HttpServletResponse) {
+        val clean = path.trimStart('/').ifEmpty { "index.html" }
+
+        if (serveResource(clean, response)) return
+
+        // 单页应用回退：没有扩展名的路径都给 index.html（以后加前端路由也不用改）
+        if (!clean.contains('.') && serveResource("index.html", response)) return
+
+        safeText(response, 404, "Not Found: $path")
+    }
+
+    private fun serveResource(resourcePath: String, response: HttpServletResponse): Boolean {
+        val stream = javaClass.classLoader.getResourceAsStream("web/$resourcePath") ?: return false
+        val bytes = stream.use { it.readBytes() }
+
+        response.status = HttpServletResponse.SC_OK
+        response.contentType = contentTypeOf(resourcePath)
+        // 带 hash 的 assets 可以长缓存，index.html 必须每次都取新的
+        response.setHeader(
+            "Cache-Control",
+            if (resourcePath.startsWith("assets/")) "public, max-age=31536000, immutable" else "no-store"
+        )
+        response.setContentLength(bytes.size)
+        response.outputStream.write(bytes)
+        response.outputStream.flush()
+        return true
+    }
+
+    private fun contentTypeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "html" -> "text/html;charset=UTF-8"
+        "js", "mjs" -> "application/javascript;charset=UTF-8"
+        "css" -> "text/css;charset=UTF-8"
+        "json", "map" -> "application/json;charset=UTF-8"
+        "svg" -> "image/svg+xml"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "ico" -> "image/x-icon"
+        "woff2" -> "font/woff2"
+        else -> "application/octet-stream"
+    }
+
+    private fun safeText(response: HttpServletResponse, status: Int, text: String) {
+        try {
+            response.status = status
+            response.contentType = "text/plain;charset=UTF-8"
+            response.writer.write(text)
+            response.writer.flush()
+        } catch (ignored: Throwable) {
+            // 响应可能已提交
+        }
     }
 
     // ---------------------------------------------------------------- 输出
