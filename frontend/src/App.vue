@@ -111,48 +111,72 @@
           <title>{{ m.node.name }}
 {{ m.node.desc }}
 {{ m.node.fileCount }} 文件 · {{ m.node.lineCount }} 行 · {{ m.node.language }}</title>
+
           <rect
             :x="m.x"
             :y="m.y"
             :width="CARD_W"
             :height="CARD_H"
-            rx="10"
+            rx="12"
             :fill="fillOf(m.node)"
-            :stroke="m.node.id === selectedId ? '#00ffcc' : borderColorOf(m.node)"
-            :stroke-width="m.node.id === selectedId ? 2 : 1.2"
+            :stroke="m.node.id === selectedId ? '#35e0c8' : borderColorOf(m.node)"
+            :stroke-width="m.node.id === selectedId ? 1.8 : 1"
           />
 
-          <text :x="m.x + 16" :y="m.y + 26" class="m-name">{{ m.node.shortName }}</text>
-
+          <!-- 左侧职责色条 -->
           <rect
-            :x="m.x + CARD_W - 16 - m.roleWidth"
-            :y="m.y + 12"
-            :width="m.roleWidth"
-            :height="18"
-            rx="4"
-            :fill="roleFill(m.node.role)"
+            :x="m.x"
+            :y="m.y + 10"
+            width="4"
+            :height="CARD_H - 20"
+            rx="2"
+            :fill="roleColor(m.node.role)"
           />
+
+          <text :x="m.x + 20" :y="m.y + 31" class="m-name">{{ m.node.shortName }}</text>
+
           <text
-            :x="m.x + CARD_W - 16 - m.roleWidth / 2"
-            :y="m.y + 25"
+            :x="m.x + CARD_W - 16"
+            :y="m.y + 30"
             class="m-role"
-            text-anchor="middle"
+            text-anchor="end"
+            :fill="roleColor(m.node.role)"
           >{{ m.node.role }}</text>
 
-          <text :x="m.x + 16" :y="m.y + 44" class="m-pkg">{{ truncate(m.node.name, 30) }}</text>
+          <text
+            v-if="m.node.name !== m.node.shortName"
+            :x="m.x + 20"
+            :y="m.y + 52"
+            class="m-pkg"
+          >{{ tailPath(m.node.name, 30) }}</text>
 
           <text
             v-for="(line, i) in m.lines"
             :key="i"
-            :x="m.x + 16"
-            :y="m.y + 64 + i * 15"
+            :x="m.x + 20"
+            :y="m.y + 76 + i * 18"
             class="m-desc"
             :class="{ issue: m.node.descState === 'error', ai: m.node.descState === 'ai' }"
           >{{ line }}</text>
 
-          <text :x="m.x + 16" :y="m.y + CARD_H - 12" class="m-stat">
+          <text :x="m.x + 20" :y="m.y + CARD_H - 13" class="m-stat">
             {{ m.node.fileCount }} 文件 · {{ m.node.lineCount }} 行
           </text>
+
+          <text
+            v-if="m.node.descState === 'ai'"
+            :x="m.x + CARD_W - 16"
+            :y="m.y + CARD_H - 13"
+            class="m-ai"
+            text-anchor="end"
+          >AI</text>
+          <text
+            v-else-if="m.node.descState === 'error'"
+            :x="m.x + CARD_W - 16"
+            :y="m.y + CARD_H - 13"
+            class="m-ai err"
+            text-anchor="end"
+          >问题</text>
         </g>
         </g>
       </svg>
@@ -164,10 +188,10 @@
         <span class="zoom-val">{{ Math.round(view.k * 100) }}%</span>
       </div>
 
-      <aside class="inspector">
-        <template v-if="selected">
+      <aside v-if="selected" class="inspector">
+        <button class="ins-close" title="关闭" @click="selectedId = ''">×</button>
           <div class="ins-head">
-            <span class="badge">{{ selected.role }}</span>
+            <span class="badge" :style="{ color: roleColor(selected.role) }">{{ selected.role }}</span>
           </div>
           <p class="ins-name">{{ selected.name }}</p>
           <p v-if="selected.advice" class="ins-label">修改意见</p>
@@ -202,9 +226,9 @@
           <ul v-if="selected.issues && selected.issues.length" class="ins-issues">
             <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
           </ul>
-        </template>
-        <p v-else class="ins-hint">点击模块看详情 · 双击跳转源码</p>
       </aside>
+
+      <p v-else class="stage-hint">点击模块看详情 · 双击跳转源码 · 滚轮缩放 · 空白处拖拽平移</p>
     </div>
 
     <footer class="legend">
@@ -236,10 +260,10 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 
 const API = 'http://127.0.0.1:8899'
 
-const CARD_W = 272
-const CARD_H = 112
-const GAP_X = 96
-const GAP_Y = 56
+const CARD_W = 288
+const CARD_H = 132
+const GAP_X = 88
+const GAP_Y = 44
 const MAX_DESC_LINES = 2
 const MAX_PER_COLUMN = 4
 
@@ -307,6 +331,26 @@ function wrapText(text, maxUnits) {
   return lines
 }
 
+function unitsTotal(text) {
+  let n = 0
+  for (const ch of text || '') n += unitsOf(ch)
+  return n
+}
+
+/** 深层路径从尾部保留（…example\config 比 example\config\… 有用） */
+function tailPath(text, maxUnits = 30) {
+  if (!text) return ''
+  if (unitsTotal(text) <= maxUnits) return text
+  let out = ''
+  let used = 0
+  for (let i = text.length - 1; i >= 0; i--) {
+    const u = unitsOf(text[i])
+    if (used + u > maxUnits - 1) break
+    out = text[i] + out
+    used += u
+  }
+  return '…' + out
+}
 function truncate(text, maxUnits) {
   if (!text) return ''
   let used = 0
@@ -358,8 +402,9 @@ const ROLE_FILL = {
 }
 
 const fillOf = (n) => ROLE_FILL[n.role] || '#152c2c'
+const roleColor = (r) => ROLE_TEXT[r] || '#80cbc4'
 const roleFill = (r) => (ROLE_TEXT[r] || '#80cbc4') + '22'
-const borderColorOf = (n) => (ROLE_TEXT[n.role] || '#80cbc4') + '66'
+const borderColorOf = (n) => (ROLE_TEXT[n.role] || '#80cbc4') + '3d'
 
 /* ------------------------------ 布局 ------------------------------ */
 
@@ -411,8 +456,7 @@ const placed = computed(() => {
         node,
         x: ci * (CARD_W + GAP_X),
         y: (ri - (col.length - 1) / 2) * (CARD_H + GAP_Y),
-        lines: wrapText(node.desc, 24).slice(0, MAX_DESC_LINES),
-        roleWidth: 14 + node.role.length * 11,
+        lines: wrapText(node.desc, 23).slice(0, MAX_DESC_LINES),
       })
     })
   })
@@ -801,49 +845,55 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* ============================================================
+   设计基调：深色石墨底 + 青色强调，信息层级靠字号/明度而非色块
+   ============================================================ */
+
 .container {
   width: 100%;
   height: 100vh;
-  background: linear-gradient(135deg, #08161f 0%, #0b211a 100%);
-  color: #e0f7fa;
   display: flex;
   flex-direction: column;
-  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
   overflow: hidden;
+  background:
+    radial-gradient(1200px 500px at 12% -10%, rgba(53, 224, 200, 0.08), transparent 60%),
+    radial-gradient(900px 400px at 92% 110%, rgba(124, 108, 240, 0.08), transparent 60%),
+    #0a0f14;
+  color: #e6eef0;
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: 13px;
 }
 
+/* ---------------- 顶栏 ---------------- */
 .header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding: 11px 20px;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.16);
-  background: rgba(0, 0, 0, 0.34);
+  justify-content: space-between;
+  gap: 18px;
+  padding: 10px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
   flex-shrink: 0;
 }
 
 .brand {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
 .title {
   margin: 0;
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 600;
-  background: linear-gradient(90deg, #00e5ff, #00ffcc);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  white-space: nowrap;
+  letter-spacing: 0.2px;
+  color: #eef7f6;
 }
 
 .subtitle {
   font-size: 11px;
-  color: #5a8a84;
+  color: #6f878c;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -852,131 +902,146 @@ onBeforeUnmount(() => {
 .actions {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
   flex-shrink: 0;
-}
-
-.auto {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: #7fb3ad;
-  cursor: pointer;
-  user-select: none;
-}
-
-.auto input {
-  accent-color: #00ffcc;
-  cursor: pointer;
-}
-
-.refresh-btn {
-  padding: 6px 18px;
-  background: linear-gradient(135deg, #00695c, #004d40);
-  border: 1px solid #00ffcc;
-  border-radius: 5px;
-  color: #e0f7fa;
-  cursor: pointer;
-  font-size: 12.5px;
-  transition: all 0.25s;
-}
-
-.refresh-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #00897b, #00695c);
-  box-shadow: 0 0 12px rgba(0, 255, 204, 0.4);
-}
-
-.refresh-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.ai-btn {
-  padding: 6px 16px;
-  background: linear-gradient(135deg, #3b2a63, #241a3d);
-  border: 1px solid #b39ddb;
-  border-radius: 5px;
-  color: #e6ddff;
-  cursor: pointer;
-  font-size: 12.5px;
-  transition: all 0.25s;
-  white-space: nowrap;
-}
-
-.ai-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #4b3680, #2e2150);
-  box-shadow: 0 0 12px rgba(179, 157, 219, 0.35);
-}
-
-.ai-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .ai-msg {
   font-size: 11.5px;
-  color: #b39ddb;
+  color: #a78bfa;
   max-width: 260px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.ai-error {
+.auto {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 20px;
-  background: rgba(211, 47, 47, 0.12);
-  border-bottom: 1px solid rgba(211, 47, 47, 0.3);
-  flex-shrink: 0;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #7d9599;
+  cursor: pointer;
+  user-select: none;
+  padding: 0 4px;
+}
+
+.auto input {
+  accent-color: #35e0c8;
+  cursor: pointer;
+}
+
+/* 按钮族：统一高度 28、圆角 6 */
+.ai-btn,
+.refresh-btn,
+.cfg-btn {
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.ai-btn {
+  padding: 0 14px;
+  background: rgba(124, 108, 240, 0.14);
+  border: 1px solid rgba(167, 139, 250, 0.38);
+  color: #c8b6ff;
+}
+
+.ai-btn:hover:not(:disabled) {
+  background: rgba(124, 108, 240, 0.24);
+  border-color: rgba(167, 139, 250, 0.6);
+}
+
+.refresh-btn {
+  padding: 0 16px;
+  background: rgba(53, 224, 200, 0.12);
+  border: 1px solid rgba(53, 224, 200, 0.4);
+  color: #7ff0dd;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: rgba(53, 224, 200, 0.2);
+  border-color: rgba(53, 224, 200, 0.7);
 }
 
 .cfg-btn {
   width: 28px;
-  height: 28px;
   padding: 0;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(0, 229, 255, 0.2);
-  border-radius: 5px;
-  color: #7fb3ad;
-  cursor: pointer;
-  font-size: 13px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #8fa6aa;
+  font-size: 14px;
   line-height: 1;
-  flex-shrink: 0;
 }
 
 .cfg-btn:hover {
-  background: rgba(0, 229, 255, 0.1);
-  color: #e0f7fa;
+  border-color: rgba(53, 224, 200, 0.4);
+  color: #7ff0dd;
 }
 
+.ai-btn:disabled,
+.refresh-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------------- 提示条 ---------------- */
 .cfg-hint {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 7px 20px;
-  background: rgba(179, 157, 219, 0.08);
-  border-bottom: 1px solid rgba(179, 157, 219, 0.2);
-  font-size: 12px;
-  color: #b0a0e0;
+  padding: 7px 18px;
+  background: rgba(124, 108, 240, 0.07);
+  border-bottom: 1px solid rgba(124, 108, 240, 0.16);
+  font-size: 11.5px;
+  color: #a99cce;
+  flex-shrink: 0;
+}
+
+.ai-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 18px;
+  background: rgba(239, 83, 80, 0.09);
+  border-bottom: 1px solid rgba(239, 83, 80, 0.24);
   flex-shrink: 0;
 }
 
 .ai-error-text {
   flex: 1;
-  font-size: 12px;
-  color: #ff9e94;
+  font-size: 11.5px;
+  color: #ffab9f;
   line-height: 1.5;
   word-break: break-word;
 }
 
+.ghost-btn {
+  height: 24px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  color: #b9c9cc;
+  cursor: pointer;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.ghost-btn:hover {
+  border-color: rgba(53, 224, 200, 0.5);
+  color: #7ff0dd;
+}
+
+/* ---------------- 画布 ---------------- */
 .stage {
-  flex: 1;
-  display: flex;
-  min-height: 0;
   position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .canvas {
@@ -991,29 +1056,41 @@ onBeforeUnmount(() => {
   cursor: grabbing;
 }
 
-/* ---- 缩放工具条 ---- */
+.stage-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  margin: 0;
+  font-size: 11px;
+  color: #4d6266;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ---------------- 缩放工具条 ---------------- */
 .zoom-bar {
   position: absolute;
-  right: 278px;
-  bottom: 44px;
+  left: 14px;
+  bottom: 12px;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   padding: 3px;
-  background: rgba(8, 22, 31, 0.9);
-  border: 1px solid rgba(0, 229, 255, 0.18);
-  border-radius: 6px;
+  background: rgba(12, 20, 26, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
   z-index: 5;
 }
 
 .zoom-btn {
   min-width: 26px;
   height: 24px;
-  padding: 0 4px;
+  padding: 0 5px;
   background: transparent;
   border: none;
-  border-radius: 4px;
-  color: #9fd8d2;
+  border-radius: 5px;
+  color: #93aaae;
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -1024,188 +1101,204 @@ onBeforeUnmount(() => {
 }
 
 .zoom-btn:hover {
-  background: rgba(0, 229, 255, 0.14);
-  color: #eafffb;
+  background: rgba(53, 224, 200, 0.14);
+  color: #c9fff5;
 }
 
 .zoom-val {
-  min-width: 36px;
+  min-width: 38px;
   text-align: center;
   font-size: 11px;
-  color: #6fa8a2;
+  color: #6f878c;
   font-family: Consolas, monospace;
 }
 
+/* ---------------- 连线 ---------------- */
 .edge {
-  stroke: #1d5f57;
-  stroke-width: 1.3;
-  color: #00e5ff;
+  stroke: #2a4a48;
+  stroke-width: 1.2;
   opacity: 0.55;
-  transition: opacity 0.2s, stroke-width 0.2s;
+  transition: opacity 0.15s, stroke-width 0.15s;
 }
 
-.edge-extends {
-  stroke: #ffb74d;
-  color: #ffb74d;
-}
-
-.edge-implements {
-  stroke: #b39ddb;
-  color: #b39ddb;
-  stroke-dasharray: 6 3;
-}
-
-.edge-uses {
-  stroke: #2e8b84;
-  color: #2e8b84;
-  stroke-dasharray: 3 3;
-}
+.edge-extends { stroke: #e8a33d; }
+.edge-implements { stroke: #8f7de0; stroke-dasharray: 5 3; }
+.edge-uses { stroke: #2f6f69; stroke-dasharray: 2 3; }
 
 .edge.active {
   opacity: 1;
-  stroke-width: 2.2;
+  stroke-width: 2;
 }
 
+/* 标签默认隐藏，只在悬停/选中相关边时出现，避免糊成一片 */
 .edge-label {
-  fill: #6fa8a2;
+  opacity: 0;
+  fill: #8fb8b3;
   font-size: 10.5px;
   paint-order: stroke;
-  stroke: #08161f;
+  stroke: #0a0f14;
   stroke-width: 3px;
   stroke-linejoin: round;
   pointer-events: none;
+  transition: opacity 0.15s;
 }
 
 .edge-label.active {
-  fill: #00ffcc;
+  opacity: 1;
+  fill: #7ff0dd;
 }
 
+/* ---------------- 模块卡 ---------------- */
 .module {
   cursor: pointer;
 }
 
 .module.selected rect:first-of-type {
-  filter: drop-shadow(0 0 8px rgba(0, 255, 204, 0.5));
+  filter: drop-shadow(0 0 6px rgba(53, 224, 200, 0.35));
 }
 
 .m-name {
-  fill: #7ffce8;
-  font-size: 14.5px;
+  fill: #eaf6f4;
+  font-size: 15px;
   font-weight: 600;
   font-family: Consolas, 'Cascadia Mono', monospace;
+  letter-spacing: 0.2px;
   pointer-events: none;
 }
 
 .m-role {
-  fill: #cdeee9;
-  font-size: 10px;
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
   pointer-events: none;
 }
 
 .m-pkg {
-  fill: #4f8f88;
-  font-size: 9.5px;
+  fill: #6d8b8f;
+  font-size: 10px;
   font-family: Consolas, monospace;
   pointer-events: none;
 }
 
 .m-desc {
-  fill: #a8ccc7;
-  font-size: 11px;
+  fill: #a9c2c2;
+  font-size: 11.5px;
   pointer-events: none;
-}
-
-.m-desc.issue {
-  fill: #ff8a80;
 }
 
 .m-desc.ai {
-  fill: #8fe8cf;
+  fill: #8fe3d2;
+}
+
+.m-desc.issue {
+  fill: #ff9e94;
 }
 
 .m-stat {
-  fill: #3f6b66;
-  font-size: 9.5px;
+  fill: #6d8b8f;
+  font-size: 10px;
   font-family: Consolas, monospace;
   pointer-events: none;
 }
 
+.m-ai {
+  fill: #7c6cf0;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  pointer-events: none;
+}
+
+.m-ai.err {
+  fill: #ef5350;
+}
+
+/* ---------------- 右侧详情（浮层） ---------------- */
 .inspector {
-  width: 262px;
-  flex-shrink: 0;
-  border-left: 1px solid rgba(0, 229, 255, 0.14);
-  background: rgba(0, 0, 0, 0.3);
-  padding: 14px 16px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
+  padding: 16px 18px;
   overflow-y: auto;
-  font-size: 12.5px;
+  background: rgba(10, 16, 21, 0.97);
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: -12px 0 28px rgba(0, 0, 0, 0.45);
+  animation: slide-in 0.16s ease-out;
+  z-index: 6;
+}
+
+@keyframes slide-in {
+  from { transform: translateX(12px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.ins-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #6f878c;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ins-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6eef0;
 }
 
 .ins-head {
-  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-right: 20px;
 }
 
 .badge {
-  padding: 1px 8px;
-  border-radius: 3px;
-  font-size: 10px;
-  background: rgba(0, 255, 204, 0.14);
-  color: #4dd0b1;
+  padding: 2px 9px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .ins-name {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
   font-family: Consolas, monospace;
   font-size: 12.5px;
-  color: #7ffce8;
+  color: #cfe9e5;
   word-break: break-all;
   line-height: 1.5;
 }
 
-.ins-desc {
-  margin: 0 0 16px;
-  color: #a8ccc7;
-  line-height: 1.6;
-}
-
 .ins-label {
-  margin: 0 0 8px;
-  font-size: 11px;
-  color: #4f8f88;
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.chip {
-  padding: 2px 8px;
-  border-radius: 3px;
-  background: rgba(0, 229, 255, 0.07);
-  border: 1px solid rgba(0, 229, 255, 0.14);
-  color: #9fd8d2;
-  font-family: Consolas, monospace;
+  margin: 16px 0 8px;
   font-size: 10.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #4d6669;
 }
 
-.ins-issues {
+.ins-desc {
   margin: 0;
-  padding-left: 16px;
-  color: #ff8a80;
-  line-height: 1.6;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #b6cfcd;
 }
 
-.ins-desc.ai {
-  color: #8fe8cf;
-}
-
-.ins-desc.bad {
-  color: #ff9e94;
-}
+.ins-desc.ai { color: #8fe3d2; }
+.ins-desc.bad { color: #ff9e94; }
 
 .ins-rel {
-  margin: 0 0 16px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -1214,41 +1307,69 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  padding: 3px 0;
-  line-height: 1.5;
+  padding: 4px 0;
   font-size: 11.5px;
+  line-height: 1.55;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .rel-dir {
-  color: #00ffcc;
+  color: #35e0c8;
   font-family: Consolas, monospace;
   flex-shrink: 0;
 }
 
 .rel-name {
-  color: #7ffce8;
+  color: #cfe9e5;
   font-family: Consolas, monospace;
   flex-shrink: 0;
-  max-width: 110px;
+  max-width: 108px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .rel-note {
-  color: #6f9d98;
-  font-size: 11px;
+  color: #7d9599;
   word-break: break-word;
 }
 
-.ins-hint {
-  margin: 0;
-  color: #4f8f88;
-  font-size: 12px;
-  text-align: center;
-  padding-top: 40px;
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
+.chip {
+  padding: 3px 9px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: #9db3b5;
+  font-family: Consolas, monospace;
+  font-size: 10.5px;
+}
+
+.chip-btn {
+  cursor: pointer;
+  transition: all 0.14s;
+}
+
+.chip-btn:hover {
+  background: rgba(53, 224, 200, 0.14);
+  border-color: rgba(53, 224, 200, 0.45);
+  color: #c9fff5;
+}
+
+.ins-issues {
+  margin: 0;
+  padding-left: 16px;
+  color: #ff9e94;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* ---------------- 空态 / 错误 ---------------- */
 .empty,
 .error-box {
   flex: 1;
@@ -1263,58 +1384,43 @@ onBeforeUnmount(() => {
 
 .empty-main {
   margin: 0;
-  font-size: 16px;
-  color: #80cbc4;
+  font-size: 14px;
+  color: #8fa6aa;
 }
 
 .tip {
   margin: 0;
-  font-size: 12.5px;
-  color: #4f6f6b;
+  font-size: 11.5px;
+  color: #4d6266;
 }
 
-.error-box {
-  color: #ff8a80;
-}
+.error-box { color: #ff9e94; }
 
 .error-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .error-msg {
   margin: 0;
-  font-size: 12.5px;
-  color: #c98b86;
   max-width: 560px;
+  font-size: 12px;
+  color: #c98b86;
   line-height: 1.6;
   word-break: break-word;
 }
 
-.ghost-btn {
-  margin-top: 8px;
-  padding: 6px 16px;
-  background: transparent;
-  border: 1px solid rgba(255, 138, 128, 0.5);
-  border-radius: 5px;
-  color: #ff8a80;
-  cursor: pointer;
-  font-size: 12.5px;
-}
-
-.ghost-btn:hover {
-  background: rgba(255, 138, 128, 0.1);
-}
-
+/* ---------------- 底栏 ---------------- */
 .legend {
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 7px 20px;
-  border-top: 1px solid rgba(0, 229, 255, 0.14);
-  font-size: 11.5px;
-  color: #6fa8a2;
-  background: rgba(0, 0, 0, 0.34);
+  padding: 0 18px;
+  height: 30px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 11px;
+  color: #6f878c;
   flex-shrink: 0;
 }
 
@@ -1326,25 +1432,26 @@ onBeforeUnmount(() => {
   vertical-align: middle;
 }
 
-.lg-extends { border-top: 1.6px solid #ffb74d; }
-.lg-implements { border-top: 1.6px dashed #b39ddb; }
-.lg-uses { border-top: 1.6px dotted #2e8b84; }
+.lg-extends { border-top: 1.6px solid #e8a33d; }
+.lg-implements { border-top: 1.6px dashed #8f7de0; }
+.lg-uses { border-top: 1.6px dotted #2f6f69; }
 
 .count {
   margin-left: auto;
-  color: #00e5ff;
+  font-family: Consolas, monospace;
+  color: #5d7a7e;
 }
 
-/* ---- 右键菜单 ---- */
+/* ---------------- 右键菜单 ---------------- */
 .ctx-menu {
   position: fixed;
   z-index: 50;
-  min-width: 172px;
+  min-width: 176px;
   padding: 4px;
-  background: #11252b;
-  border: 1px solid rgba(0, 229, 255, 0.26);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  background: #111a20;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
 }
@@ -1353,57 +1460,43 @@ onBeforeUnmount(() => {
   padding: 7px 12px;
   background: transparent;
   border: none;
-  border-radius: 4px;
-  color: #cdeee9;
-  font-size: 12.5px;
+  border-radius: 5px;
+  color: #c2d6d8;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .ctx-item:hover {
-  background: rgba(0, 229, 255, 0.12);
-  color: #eafffb;
+  background: rgba(53, 224, 200, 0.12);
+  color: #e6fffb;
 }
 
-.ctx-item.danger {
-  color: #ff9e94;
-}
+.ctx-item.danger { color: #ff9e94; }
 
 .ctx-item.danger:hover {
-  background: rgba(211, 47, 47, 0.16);
+  background: rgba(239, 83, 80, 0.14);
 }
 
-/* ---- 文件 chip 可点击 ---- */
-.chip-btn {
-  cursor: pointer;
-  font-family: Consolas, monospace;
-  transition: all 0.15s;
-}
-
-.chip-btn:hover {
-  background: rgba(0, 229, 255, 0.18);
-  border-color: rgba(0, 229, 255, 0.45);
-  color: #eafffb;
-}
-
-/* ---- 轻提示 ---- */
+/* ---------------- 轻提示 ---------------- */
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 52px;
+  bottom: 46px;
   transform: translateX(-50%);
-  padding: 8px 18px;
-  background: rgba(11, 33, 26, 0.96);
-  border: 1px solid rgba(0, 255, 204, 0.45);
+  padding: 7px 16px;
+  background: rgba(12, 20, 26, 0.96);
+  border: 1px solid rgba(53, 224, 200, 0.4);
   border-radius: 6px;
   color: #9ff5e4;
-  font-size: 12.5px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
   pointer-events: none;
   white-space: nowrap;
   max-width: 80vw;
   overflow: hidden;
   text-overflow: ellipsis;
+  z-index: 60;
 }
 </style>

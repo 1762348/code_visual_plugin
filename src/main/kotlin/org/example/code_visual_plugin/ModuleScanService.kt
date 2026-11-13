@@ -289,6 +289,11 @@ object ModuleScanService {
             files.sortedByDescending { it.size }.map { it.fileName to it.text }
         )
 
+        // 结构态描述：列代表文件，比复述"几个文件几行"有用得多
+        // （文件数/行数在卡片的统计行里已经有了，避免重复）
+        val sample = files.map { it.fileName }.distinct().take(3).joinToString("、")
+        val structuralDesc = if (files.size <= 3) sample else "$sample 等 ${files.size} 个文件"
+
         return ProjectModule(
             id = "mod:$path",
             name = path,
@@ -297,7 +302,7 @@ object ModuleScanService {
             desc = if (allIssues.isNotEmpty()) {
                 "⚠ ${allIssues.size} 处语法错误：${allIssues.first()}"
             } else {
-                "$role · ${files.size} 文件 ${lines} 行 · $language"
+                structuralDesc
             },
             descState = if (allIssues.isNotEmpty()) "error" else "structural",
             fileCount = files.size,
