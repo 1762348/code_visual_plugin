@@ -13,7 +13,7 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="MyToolWindow"
+        <toolWindow id="CodeCanvas"
                     factoryClass="org.example.code_visual_plugin.MyToolWindowFactory"
                     anchor="right"/>
 
