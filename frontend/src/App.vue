@@ -72,8 +72,8 @@
             viewBox="0 0 10 10"
             refX="9"
             refY="5"
-            markerWidth="6"
-            markerHeight="6"
+            markerWidth="5"
+            markerHeight="5"
             orient="auto-start-reverse"
           >
             <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
@@ -184,7 +184,8 @@
       <div class="zoom-bar">
         <button class="zoom-btn" title="放大" @click="zoomBy(1.2)">＋</button>
         <button class="zoom-btn" title="缩小" @click="zoomBy(1 / 1.2)">－</button>
-        <button class="zoom-btn wide" title="适应窗口（Ctrl+0）" @click="resetView">适应</button>
+        <button class="zoom-btn wide" title="适应窗口" @click="fitView">适应</button>
+        <button class="zoom-btn wide" title="实际大小（Ctrl+0）" @click="resetView">100%</button>
         <span class="zoom-val">{{ Math.round(view.k * 100) }}%</span>
       </div>
 
@@ -256,7 +257,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 
 const API = 'http://127.0.0.1:8899'
 
@@ -496,12 +497,14 @@ function applyZoom(cx, cy, nextK) {
 }
 
 function onWheel(evt) {
+  userAdjusted = true
   const p = toViewBox(evt)
   const factor = evt.deltaY < 0 ? 1.12 : 1 / 1.12
   applyZoom(p.x, p.y, view.k * factor)
 }
 
 function zoomBy(factor) {
+  userAdjusted = true
   const svg = svgEl.value
   if (!svg) return
   const r = svg.getBoundingClientRect()
@@ -509,17 +512,14 @@ function zoomBy(factor) {
   applyZoom(p.x, p.y, view.k * factor)
 }
 
-function resetView() {
-  view.k = 1
-  view.x = 0
-  view.y = 0
-}
+
 
 function onCanvasDown(evt) {
   if (evt.button !== 0) return
   // 在模块卡片上按下不拖动画布（那是点击/双击语义）
   if (evt.target.closest && evt.target.closest('.module')) return
 
+  userAdjusted = true
   panning.value = true
   const p = toViewBox(evt)
   panStart = { px: p.x, py: p.y, ox: view.x, oy: view.y }
@@ -541,9 +541,19 @@ function onPanUp() {
   window.removeEventListener('mouseup', onPanUp)
 }
 
-const viewBox = computed(() => {
+/* ---------------- 画布坐标模型 ----------------
+   viewBox 固定等于可视区像素尺寸，因此 k=1 就是真正的 100%。
+   以前 viewBox 随内容变化，等于把"自适应"当成了 1 倍，
+   图一大文字就被压成几个像素。
+------------------------------------------------ */
+
+const viewport = reactive({ w: 900, h: 640 })
+let resizeObserver = null
+let userAdjusted = false
+
+const contentBounds = computed(() => {
   const list = placed.value
-  if (!list.length) return '0 0 900 600'
+  if (!list.length) return { minX: 0, minY: 0, w: 0, h: 0 }
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -554,63 +564,104 @@ const viewBox = computed(() => {
     maxX = Math.max(maxX, p.x + CARD_W)
     maxY = Math.max(maxY, p.y + CARD_H)
   }
-  const pad = 90
-  const w = Math.max(420, maxX - minX + pad * 2)
-  const h = Math.max(300, maxY - minY + pad * 2)
-  return `${minX - pad} ${minY - pad} ${w} ${h}`
+  return { minX, minY, w: maxX - minX, h: maxY - minY }
 })
 
-function borderPoint(box, dx, dy) {
-  const hw = CARD_W / 2
-  const hh = CARD_H / 2
-  const cx = box.x + hw
-  const cy = box.y + hh
-  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return { x: cx, y: cy }
-  const sx = Math.abs(dx) < 0.001 ? Infinity : hw / Math.abs(dx)
-  const sy = Math.abs(dy) < 0.001 ? Infinity : hh / Math.abs(dy)
-  const s = Math.min(sx, sy)
-  return { x: cx + dx * s, y: cy + dy * s }
+const viewBox = computed(() => `0 0 ${viewport.w} ${viewport.h}`)
+
+/** 把内容居中显示在给定缩放比下 */
+function centerAt(k) {
+  const b = contentBounds.value
+  if (!b.w || !b.h) return
+  view.k = k
+  view.x = (viewport.w - b.w * k) / 2 - b.minX * k
+  view.y = (viewport.h - b.h * k) / 2 - b.minY * k
+}
+
+/** 适应窗口，但不会缩到读不清的程度（再小就靠用户自己缩） */
+const MIN_FIT = 0.7
+
+function fitView() {
+  const b = contentBounds.value
+  if (!b.w || !b.h) return
+  const pad = 28
+  const k = Math.min(1, Math.min((viewport.w - pad * 2) / b.w, (viewport.h - pad * 2) / b.h))
+  centerAt(Math.max(MIN_FIT, k))
+  userAdjusted = false
+}
+
+/** 100%：按真实像素 1:1 显示 */
+function resetView() {
+  centerAt(1)
+  userAdjusted = true
+}
+
+/* ---------------- 连线：正交折线 ---------------- */
+
+/**
+ * 分层布局里用「右出 → 竖向 → 左入」的折线，拐角带圆角。
+ * 比贝塞尔曲线干净得多：不会斜穿卡片之间的空白。
+ */
+function routeEdge(a, b, slot = 0) {
+  const ay = a.y + CARD_H / 2
+  const by = b.y + CARD_H / 2
+  const offset = slot * 12
+
+  // 同一列：从右侧绕出去再回来
+  if (Math.abs(a.x - b.x) < 1) {
+    const x1 = a.x + CARD_W
+    const bulge = 48 + offset
+    return {
+      d: `M ${x1} ${ay} L ${x1 + bulge} ${ay} L ${x1 + bulge} ${by} L ${x1} ${by}`,
+      lx: x1 + bulge * 0.8,
+      ly: (ay + by) / 2,
+    }
+  }
+
+  const forward = b.x > a.x
+  const x1 = forward ? a.x + CARD_W : a.x
+  const x2 = forward ? b.x : b.x + CARD_W
+  const dirIn = forward ? 1 : -1
+  const mx = (x1 + x2) / 2 + (forward ? offset : -offset)
+
+  // 几乎水平：直接一条直线
+  if (Math.abs(by - ay) < 1.5) {
+    return { d: `M ${x1} ${ay} L ${x2} ${by}`, lx: (x1 + x2) / 2, ly: ay }
+  }
+
+  const r = Math.max(2, Math.min(14, Math.abs(mx - x1) / 2, Math.abs(x2 - mx) / 2))
+  const sign = by > ay ? 1 : -1
+
+  const d = [
+    `M ${x1} ${ay}`,
+    `L ${mx - dirIn * r} ${ay}`,
+    `Q ${mx} ${ay} ${mx} ${ay + sign * r}`,
+    `L ${mx} ${by - sign * r}`,
+    `Q ${mx} ${by} ${mx + dirIn * r} ${by}`,
+    `L ${x2} ${by}`,
+  ].join(' ')
+
+  return { d, lx: mx, ly: (ay + by) / 2 }
 }
 
 const routed = computed(() => {
   const out = []
+  const slots = new Map()
   for (let i = 0; i < relations.value.length; i++) {
     const e = relations.value[i]
     const a = boxById.value.get(e.from)
     const b = boxById.value.get(e.to)
     if (!a || !b) continue
 
-    const acx = a.x + CARD_W / 2
-    const acy = a.y + CARD_H / 2
-    const bcx = b.x + CARD_W / 2
-    const bcy = b.y + CARD_H / 2
-    const dx = bcx - acx
-    const dy = bcy - acy
+    const pairKey = `${e.from}->${e.to}`
+    const slot = slots.get(pairKey) || 0
+    slots.set(pairKey, slot + 1)
 
-    const p1 = borderPoint(a, dx, dy)
-    const p2 = borderPoint(b, -dx, -dy)
-
-    let d
-    let lx
-    let ly
-    if (Math.abs(bcx - acx) < 1) {
-      // 同一列：向右绕一段
-      const bulge = 70
-      d = `M ${a.x + CARD_W} ${acy} C ${a.x + CARD_W + bulge} ${acy}, ${b.x + CARD_W + bulge} ${bcy}, ${b.x + CARD_W} ${bcy}`
-      lx = a.x + CARD_W + bulge * 0.75
-      ly = (acy + bcy) / 2
-    } else {
-      const mx = (p1.x + p2.x) / 2
-      d = `M ${p1.x} ${p1.y} C ${mx} ${p1.y}, ${mx} ${p2.y}, ${p2.x} ${p2.y}`
-      lx = mx
-      ly = (p1.y + p2.y) / 2 - 4
-    }
-
-    out.push({ key: `${e.from}->${e.to}#${i}`, edge: e, d, lx, ly })
+    const geo = routeEdge(a, b, slot)
+    out.push({ key: `${pairKey}#${i}`, edge: e, d: geo.d, lx: geo.lx, ly: geo.ly })
   }
   return out
 })
-
 const selected = computed(() => modules.value.find((n) => n.id === selectedId.value) || null)
 const hoveredId = ref('')
 
@@ -831,13 +882,36 @@ onMounted(() => {
   fetchAiStatus()
   window.addEventListener('click', closeMenu)
   window.addEventListener('keydown', onGlobalKey)
+
+  // 画布尺寸 → viewBox，保证 100% 就是真实像素
+  const svg = svgEl.value
+  if (svg) {
+    viewport.w = Math.max(200, svg.clientWidth || 900)
+    viewport.h = Math.max(200, svg.clientHeight || 640)
+
+    resizeObserver = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect
+      if (!box) return
+      viewport.w = Math.max(200, box.width)
+      viewport.h = Math.max(200, box.height)
+      if (!userAdjusted) fitView()
+    })
+    resizeObserver.observe(svg)
+  }
 })
+
+// 数据变化后重新适配一次
+watch(
+  () => modules.value.length,
+  () => nextTick(() => fitView()),
+)
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
   if (aiTimer) clearInterval(aiTimer)
   if (controller) controller.abort()
   if (toastTimer) clearTimeout(toastTimer)
+  if (resizeObserver) resizeObserver.disconnect()
   onPanUp()
   window.removeEventListener('click', closeMenu)
   window.removeEventListener('keydown', onGlobalKey)
@@ -1115,15 +1189,18 @@ onBeforeUnmount(() => {
 
 /* ---------------- 连线 ---------------- */
 .edge {
-  stroke: #2a4a48;
-  stroke-width: 1.2;
-  opacity: 0.55;
+  stroke: #294744;
+  color: #2f6f69;
+  stroke-width: 1.1;
+  opacity: 0.5;
+  fill: none;
   transition: opacity 0.15s, stroke-width 0.15s;
 }
 
-.edge-extends { stroke: #e8a33d; }
-.edge-implements { stroke: #8f7de0; stroke-dasharray: 5 3; }
-.edge-uses { stroke: #2f6f69; stroke-dasharray: 2 3; }
+/* color 同时决定箭头颜色（marker 用 currentColor） */
+.edge-extends { stroke: #e8a33d; color: #e8a33d; }
+.edge-implements { stroke: #8f7de0; color: #8f7de0; stroke-dasharray: 5 3; }
+.edge-uses { stroke: #2f6f69; color: #2f6f69; stroke-dasharray: 2 3; }
 
 .edge.active {
   opacity: 1;
