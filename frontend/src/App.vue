@@ -39,6 +39,11 @@
       <button class="ghost-btn" @click="resetAi">清除</button>
     </div>
 
+    <div v-if="notice" class="notice-bar">
+      <span class="notice-icon">!</span>
+      <span class="notice-text">{{ notice }}</span>
+    </div>
+
     <div v-if="loading && !modules.length" class="empty">
       <p class="empty-main">正在扫描项目 PSI...</p>
       <p class="tip">首次扫描需要几百毫秒到几秒，取决于项目大小</p>
@@ -272,6 +277,7 @@ const modules = ref([])
 const relations = ref([])
 const stats = ref({ modules: 0, files: 0, lines: 0, relations: 0, languages: [] })
 const projectName = ref('')
+const notice = ref('')
 const loading = ref(false)
 const error = ref('')
 const selectedId = ref('')
@@ -841,6 +847,7 @@ async function fetchData() {
       error.value = data.message || data.msg || '服务返回失败'
       modules.value = []
       relations.value = []
+      notice.value = ''
       return
     }
 
@@ -848,6 +855,7 @@ async function fetchData() {
     relations.value = data.edges || []
     stats.value = data.stats || { modules: 0, files: 0, lines: 0, relations: 0, languages: [] }
     projectName.value = data.projectName || ''
+    notice.value = data.notice || ''
 
     if (!modules.value.some((n) => n.id === selectedId.value)) selectedId.value = ''
   } catch (e) {
@@ -1073,6 +1081,37 @@ onBeforeUnmount(() => {
   font-size: 11.5px;
   color: #a99cce;
   flex-shrink: 0;
+}
+
+.notice-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 18px;
+  background: rgba(232, 163, 61, 0.08);
+  border-bottom: 1px solid rgba(232, 163, 61, 0.22);
+  flex-shrink: 0;
+}
+
+.notice-icon {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: rgba(232, 163, 61, 0.9);
+  color: #1a1206;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.notice-text {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #d8ac6b;
+  word-break: break-word;
 }
 
 .ai-error {

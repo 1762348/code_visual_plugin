@@ -29,6 +29,7 @@ data class ProjectGraph(
     val success: Boolean = true,
     val projectName: String = "",
     val message: String = "",
+    val notice: String = "",
     val stats: GraphStats = GraphStats(),
     val nodes: List<ProjectModule> = emptyList(),
     val edges: List<ModuleRelation> = emptyList()
@@ -129,6 +130,31 @@ object ModuleScanService {
     fun build(project: Project): ProjectGraph =
         ReadAction.compute<ProjectGraph, RuntimeException> { doBuild(project) }
 
+    // ------------------------------------------------------------ 保底
+
+    private const val MAX_MODULES = 80
+
+    /**
+     * 明显不该扫的根目录：用户主目录、磁盘根。
+     * 在这种目录上扫会得到上千个模块（浏览器缓存、Office 插件、node_modules 之外的杂物），
+     * 图完全不可用，而且很慢。
+     */
+    private fun pathologicalRoot(basePath: String?): String? {
+        if (basePath.isNullOrBlank()) return null
+        val normalized = basePath.replace('\\', '/').trimEnd('/')
+        val home = System.getProperty("user.home")?.replace('\\', '/')?.trimEnd('/')
+
+        if (home != null && normalized.equals(home, ignoreCase = true)) {
+            return "当前打开的项目根是用户主目录（$basePath），里面是各种软件缓存和配置，不是代码仓库。" +
+                "请用 File → Open 打开具体的项目文件夹，或把这个目录下的代码仓库单独打开。"
+        }
+        if (Regex("""^[A-Za-z]:$""").matches(normalized)) {
+            return "当前打开的是磁盘根目录（$basePath），范围太大会扫出上千个模块。" +
+                "请打开具体的项目文件夹。"
+        }
+        return null
+    }
+
     // ------------------------------------------------------------ 扫描
 
     private class Hit(
@@ -142,6 +168,10 @@ object ModuleScanService {
     )
 
     private fun doBuild(project: Project): ProjectGraph {
+        pathologicalRoot(project.basePath)?.let { reason ->
+            return ProjectGraph(success = false, projectName = project.name, message = reason)
+        }
+
         val hits = collect(project)
         if (hits.isEmpty()) {
             return ProjectGraph(
@@ -152,7 +182,19 @@ object ModuleScanService {
             )
         }
 
-        val byModule = hits.groupBy { it.modulePath }
+        val allModules = hits.groupBy { it.modulePath }
+
+        // 模块太多时只保留最大的若干个，否则画布上全是看不清的小方块
+        val truncated = allModules.size > MAX_MODULES
+        val byModule = if (!truncated) {
+            allModules
+        } else {
+            allModules.entries
+                .sortedByDescending { e -> e.value.sumOf { it.size } }
+                .take(MAX_MODULES)
+                .associate { it.key to it.value }
+        }
+
         val moduleIds = byModule.keys.associateWith { "mod:$it" }
 
         // 留住文件引用，供前端点击跳转
@@ -167,6 +209,12 @@ object ModuleScanService {
         return ProjectGraph(
             success = true,
             projectName = project.name,
+            notice = if (truncated) {
+                "模块太多（共 ${allModules.size} 个），这里只显示体积最大的 $MAX_MODULES 个。" +
+                    "建议打开更具体的子目录，或确认项目根是否正确。"
+            } else {
+                ""
+            },
             stats = GraphStats(
                 modules = nodes.size,
                 files = hits.size,
