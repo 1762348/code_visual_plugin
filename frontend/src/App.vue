@@ -201,6 +201,7 @@
         <span><i class="lg lg-extends"></i>继承</span>
         <span><i class="lg lg-implements"></i>实现</span>
         <span><i class="lg lg-uses"></i>依赖</span>
+        <span><i class="lg lg-contain"></i>包含</span>
       </div>
 
       <!-- 右下角：未聚焦时是全局统计，聚焦时是这条链路的处理量与规模 -->
@@ -249,7 +250,23 @@
           </div>
         </div>
 
-        <div class="dp-block">
+        <div v-if="childModules.length" class="dp-block">
+          <p class="dp-label">子模块（{{ childModules.length }}）</p>
+          <ul class="dp-sub">
+            <li
+              v-for="m in childModules"
+              :key="m.id"
+              :style="{ paddingLeft: (childDepth(m.name) - 1) * 12 + 'px' }"
+              @click="selectedId = m.id"
+            >
+              <span class="sub-dir">└</span>
+              <span class="sub-name">{{ m.shortName }}</span>
+              <span class="sub-meta">{{ m.role }} · {{ m.fileCount }} 文件</span>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="selectedRelations.length" class="dp-block">
           <p class="dp-label">关联模块（{{ selectedRelations.length }}）</p>
           <ul class="dp-rel">
             <li v-for="(r, i) in selectedRelations" :key="i">
@@ -388,20 +405,40 @@ function unitsOf(ch) {
 }
 
 function wrapText(text, maxUnits) {
+  // 中文按单字断行，英文/数字保持整词，避免 "Vue" 被拆成 "Vu"+"e"
+  const tokens = String(text || '').match(/[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]|[A-Za-z0-9_./#:-]+|\s+|./g) || []
+
   const lines = []
   let cur = ''
   let used = 0
-  for (const ch of text || '') {
-    const u = unitsOf(ch)
-    if (used + u > maxUnits && cur) {
-      lines.push(cur)
+
+  for (const token of tokens) {
+    let u = unitsTotal(token)
+    if (used + u > maxUnits && cur.trim()) {
+      lines.push(cur.trimEnd())
       cur = ''
       used = 0
+      if (/^\s+$/.test(token)) continue
     }
-    cur += ch
-    used += u
+    // 单个 token 就超长（极长的标识符）：按单位硬切，剩余继续参与排版
+    let rest = token
+    while (unitsTotal(rest) > maxUnits) {
+      let cut = 0
+      let acc = 0
+      for (const ch of rest) {
+        const cu = unitsOf(ch)
+        if (acc + cu > maxUnits) break
+        acc += cu
+        cut++
+      }
+      cut = Math.max(1, cut)
+      lines.push(rest.slice(0, cut))
+      rest = rest.slice(cut)
+    }
+    cur += rest
+    used += unitsTotal(rest)
   }
-  if (cur) lines.push(cur)
+  if (cur.trim()) lines.push(cur.trimEnd())
   return lines
 }
 
@@ -502,15 +539,90 @@ function layerOf(nodes, edges) {
 }
 
 /** 聚焦模式下只保留：当前模块 + 与它直接相连的模块 */
+/* ---------------- 模块层级 ----------------
+   目录模块天然有父子关系（frontend 包含 frontend/src），
+   但数据里它们是两条平行记录、没有任何边，所以聚焦父模块时会"关联 0"。
+   这里按路径前缀把它们补成层级关系。
+------------------------------------------------ */
+
+/** 路径的父级名字，例如 a/b/c -> a/b */
+function parentName(name) {
+  const i = name.lastIndexOf('/')
+  return i > 0 ? name.slice(0, i) : ''
+}
+
+const moduleByName = computed(() => {
+  const m = new Map()
+  for (const n of modules.value) m.set(n.name, n)
+  return m
+})
+
+/** 当前模块的直接父模块 */
+const parentModule = computed(() => {
+  const sel = selected.value
+  if (!sel) return null
+  return moduleByName.value.get(parentName(sel.name)) || null
+})
+
+/** 当前模块的子孙模块（按路径深度排序），直接子级在前 */
+const childModules = computed(() => {
+  const sel = selected.value
+  if (!sel) return []
+  const prefix = sel.name + '/'
+  return modules.value
+    .filter((m) => m.name.startsWith(prefix))
+    .sort((a, b) => a.name.split('/').length - b.name.split('/').length || a.name.localeCompare(b.name))
+})
+
+/** 子模块的层级缩进深度（1 = 直接子级） */
+function childDepth(name) {
+  const sel = selected.value
+  if (!sel) return 1
+  return name.slice(sel.name.length + 1).split('/').length
+}
+
 const focusNodes = computed(() => {
   const id = selectedId.value
   if (!id) return modules.value
+
   const keep = new Set([id])
   for (const e of relations.value) {
     if (e.from === id) keep.add(e.to)
     if (e.to === id) keep.add(e.from)
   }
+
+  // 层级：父模块 + 直接子模块也放进画布，否则点父模块时是一片空白
+  const parent = parentModule.value
+  if (parent) keep.add(parent.id)
+  for (const child of childModules.value) {
+    if (childDepth(child.name) === 1) keep.add(child.id)
+  }
+
   return modules.value.filter((n) => keep.has(n.id))
+})
+
+/** 画布上要画的边：引用关系 + 父子包含关系 */
+const displayEdges = computed(() => {
+  const visible = new Set(focusNodes.value.map((n) => n.id))
+  const out = []
+
+  for (const e of relations.value) {
+    if (visible.has(e.from) && visible.has(e.to)) out.push(e)
+  }
+
+  for (const n of focusNodes.value) {
+    const parent = moduleByName.value.get(parentName(n.name))
+    if (parent && visible.has(parent.id)) {
+      out.push({
+        from: parent.id,
+        to: n.id,
+        kind: 'contain',
+        label: '包含 ' + n.shortName,
+      })
+    }
+  }
+
+  return out
 })
 
 const placed = computed(() => {
@@ -733,8 +845,9 @@ function routeEdge(a, b, slot = 0) {
 const routed = computed(() => {
   const out = []
   const slots = new Map()
-  for (let i = 0; i < relations.value.length; i++) {
-    const e = relations.value[i]
+  const edges = displayEdges.value
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i]
     const a = boxById.value.get(e.from)
     const b = boxById.value.get(e.to)
     if (!a || !b) continue
@@ -1361,6 +1474,13 @@ onBeforeUnmount(() => {
 }
 
 /* color 同时决定箭头颜色（marker 用 currentColor） */
+.edge-contain {
+  stroke: #3f6b66;
+  color: #3f6b66;
+  stroke-dasharray: 1 3;
+  opacity: 0.5;
+}
+
 .edge-extends { stroke: #e8a33d; color: #e8a33d; }
 .edge-implements { stroke: #8f7de0; color: #8f7de0; stroke-dasharray: 5 3; }
 .edge-uses { stroke: #2f6f69; color: #2f6f69; stroke-dasharray: 2 3; }
@@ -1675,6 +1795,7 @@ onBeforeUnmount(() => {
 .lg-extends { border-top: 1.6px solid #e8a33d; }
 .lg-implements { border-top: 1.6px dashed #8f7de0; }
 .lg-uses { border-top: 1.6px dotted #2f6f69; }
+.lg-contain { border-top: 1.6px dotted #3f6b66; }
 
 .count {
   margin-left: auto;
@@ -1820,6 +1941,43 @@ onBeforeUnmount(() => {
 }
 
 /* 关联：只表达关系，不可点选 */
+.dp-sub {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.dp-sub li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.dp-sub li:hover {
+  background: rgba(53, 224, 200, 0.1);
+}
+
+.sub-dir {
+  color: #4d6669;
+  font-family: Consolas, monospace;
+}
+
+.sub-name {
+  color: #cfe9e5;
+  font-family: Consolas, monospace;
+}
+
+.sub-meta {
+  color: #5d7a7e;
+  font-size: 10.5px;
+}
+
 .dp-rel {
   margin: 0;
   padding: 0;
