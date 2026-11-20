@@ -60,7 +60,8 @@
       <p class="tip">当前项目里没有 .java 源文件？</p>
     </div>
 
-    <div v-else class="stage">
+    <div v-else class="stage" :class="{ focused: !!selected }">
+      <div class="canvas-wrap">
       <svg
         ref="svgEl"
         class="canvas"
@@ -96,6 +97,7 @@
             marker-end="url(#arrow)"
           />
           <text
+            v-if="!selected"
             :x="r.lx"
             :y="r.ly"
             class="edge-label"
@@ -194,30 +196,71 @@
         <span class="zoom-val">{{ Math.round(view.k * 100) }}%</span>
       </div>
 
-      <aside v-if="selected" class="inspector">
-        <button class="ins-close" title="关闭" @click="selectedId = ''">×</button>
-          <div class="ins-head">
+      <!-- 左下角：线条示意（始终保留） -->
+      <div class="canvas-legend">
+        <span><i class="lg lg-extends"></i>继承</span>
+        <span><i class="lg lg-implements"></i>实现</span>
+        <span><i class="lg lg-uses"></i>依赖</span>
+      </div>
+
+      <!-- 右下角：未聚焦时是全局统计，聚焦时是这条链路的处理量与规模 -->
+      <div class="canvas-stats">
+        <template v-if="selected">
+          <div class="stat-row"><span class="stat-k">关联模块</span><span class="stat-v">{{ focusStats.related }}</span></div>
+          <div class="stat-row"><span class="stat-k">数据流转</span><span class="stat-v">{{ focusStats.refs }} 次</span></div>
+          <div class="stat-row"><span class="stat-k">链路规模</span><span class="stat-v">{{ focusStats.files }} 文件 / {{ focusStats.lines }} 行</span></div>
+        </template>
+        <template v-else>
+          <div class="stat-row"><span class="stat-k">模块</span><span class="stat-v">{{ stats.modules }}</span></div>
+          <div class="stat-row"><span class="stat-k">规模</span><span class="stat-v">{{ stats.files }} 文件 / {{ stats.lines }} 行</span></div>
+          <div class="stat-row"><span class="stat-k">关系</span><span class="stat-v">{{ stats.relations }}</span></div>
+          <div v-if="aiStatus.total" class="stat-row"><span class="stat-k">AI 缓存</span><span class="stat-v">{{ aiStatus.cached }}/{{ aiStatus.total }}</span></div>
+        </template>
+      </div>
+
+      <p v-if="!selected" class="stage-hint">点击模块进入聚焦 · 滚轮缩放 · 空白处拖拽平移</p>
+      </div>
+
+      <!-- 下半部分：当前模块介绍 -->
+      <section v-if="selected" class="detail-panel">
+        <div class="dp-col dp-main">
+          <div class="dp-head">
             <span class="badge" :style="{ color: roleColor(selected.role) }">{{ selected.role }}</span>
+            <span class="dp-name">{{ selected.name }}</span>
+            <button class="dp-close" title="回到全图（Esc）" @click="selectedId = ''">×</button>
           </div>
-          <p class="ins-name">{{ selected.name }}</p>
-          <p v-if="selected.advice" class="ins-label">修改意见</p>
+
+          <p v-if="selected.advice" class="dp-label">修改意见</p>
           <p
-            class="ins-desc"
+            class="dp-desc"
             :class="{ ai: selected.descState === 'ai', bad: selected.descState === 'error' }"
           >{{ selected.desc }}</p>
 
-          <template v-if="selectedRelations.length">
-            <p class="ins-label">关系（{{ selectedRelations.length }}）</p>
-            <ul class="ins-rel">
-              <li v-for="(r, i) in selectedRelations" :key="i">
-                <span class="rel-dir">{{ r.dir }}</span>
-                <span class="rel-name">{{ r.other }}</span>
-                <span class="rel-note">{{ r.label }}</span>
-              </li>
+          <p class="dp-meta">
+            {{ selected.fileCount }} 文件 · {{ selected.lineCount }} 行 · {{ selected.language }}
+          </p>
+
+          <template v-if="selected.issues && selected.issues.length">
+            <p class="dp-label">问题</p>
+            <ul class="dp-issues">
+              <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
             </ul>
           </template>
+        </div>
 
-          <p class="ins-label">文件（{{ selected.fileCount }}）· 点击跳转</p>
+        <div class="dp-col dp-side">
+          <p class="dp-label">关联模块（{{ selectedRelations.length }}）· 点击切换</p>
+          <ul class="dp-rel">
+            <li v-for="(r, i) in selectedRelations" :key="i" @click="selectedId = r.id">
+              <span class="rel-dir">{{ r.dir }}</span>
+              <span class="rel-name">{{ r.other }}</span>
+              <span class="rel-note">{{ r.label }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="dp-col dp-files">
+          <p class="dp-label">文件（{{ selected.fileCount }}）· 点击跳转</p>
           <div class="chips">
             <button
               v-for="c in selected.files"
@@ -227,22 +270,10 @@
               @click="openInIde(selected.id, c)"
             >{{ c }}</button>
           </div>
-
-          <p v-if="selected.issues && selected.issues.length" class="ins-label">问题</p>
-          <ul v-if="selected.issues && selected.issues.length" class="ins-issues">
-            <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
-          </ul>
-      </aside>
-
-      <p v-else class="stage-hint">点击模块看详情 · 双击跳转源码 · 滚轮缩放 · 空白处拖拽平移</p>
+        </div>
+      </section>
     </div>
 
-    <footer class="legend">
-      <span><i class="lg lg-extends"></i>继承</span>
-      <span><i class="lg lg-implements"></i>实现</span>
-      <span><i class="lg lg-uses"></i>依赖</span>
-      <span class="count">{{ footerStats }}{{ cacheLabel }}</span>
-    </footer>
 
     <div
       v-if="menu.open"
@@ -307,6 +338,27 @@ const footerStats = computed(
   () =>
     `${stats.value.modules} 模块 · ${stats.value.files} 文件 · ${stats.value.lines} 行 · ${stats.value.relations} 关系`,
 )
+
+/** 聚焦时的链路指标：关联数 / 数据流转次数 / 规模 */
+function refWeight(label) {
+  const m = /×(\d+)/.exec(label || '')
+  return m ? Number(m[1]) : 1
+}
+
+const focusStats = computed(() => {
+  const node = selected.value
+  if (!node) return { related: 0, refs: 0, files: 0, lines: 0 }
+
+  const rels = relations.value.filter((e) => e.from === node.id || e.to === node.id)
+  const nodes = focusNodes.value
+
+  return {
+    related: rels.length,
+    refs: rels.reduce((sum, e) => sum + refWeight(e.label), 0),
+    files: nodes.reduce((s, n) => s + (n.fileCount || 0), 0),
+    lines: nodes.reduce((s, n) => s + (n.lineCount || 0), 0),
+  }
+})
 
 const cacheLabel = computed(() =>
   aiStatus.value.total > 0
@@ -434,8 +486,20 @@ function layerOf(nodes, edges) {
   return layer
 }
 
+/** 聚焦模式下只保留：当前模块 + 与它直接相连的模块 */
+const focusNodes = computed(() => {
+  const id = selectedId.value
+  if (!id) return modules.value
+  const keep = new Set([id])
+  for (const e of relations.value) {
+    if (e.from === id) keep.add(e.to)
+    if (e.to === id) keep.add(e.from)
+  }
+  return modules.value.filter((n) => keep.has(n.id))
+})
+
 const placed = computed(() => {
-  const nodes = modules.value
+  const nodes = focusNodes.value
   if (!nodes.length) return []
 
   const layer = layerOf(nodes, relations.value)
@@ -689,6 +753,7 @@ const selectedRelations = computed(() => {
       const other = byId.get(outgoing ? e.to : e.from)
       return {
         dir: outgoing ? '→' : '←',
+        id: outgoing ? e.to : e.from,
         other: other ? other.shortName : '?',
         label: e.label,
       }
@@ -857,7 +922,13 @@ async function fetchData() {
     projectName.value = data.projectName || ''
     notice.value = data.notice || ''
 
-    if (!modules.value.some((n) => n.id === selectedId.value)) selectedId.value = ''
+    // 深链：?focus=mod:xxx
+    const wantFocus = new URLSearchParams(location.search).get('focus')
+    if (wantFocus && modules.value.some((n) => n.id === wantFocus)) {
+      selectedId.value = wantFocus
+    } else if (!modules.value.some((n) => n.id === selectedId.value)) {
+      selectedId.value = ''
+    }
   } catch (e) {
     if (e.name === 'AbortError') return
     error.value = '连不上插件服务（127.0.0.1:8899）。请确认插件已启动、右侧工具窗已打开。'
@@ -878,7 +949,10 @@ watch(autoRefresh, (on) => {
 })
 
 function onGlobalKey(event) {
-  if (event.key === 'Escape') closeMenu()
+  if (event.key === 'Escape') {
+    if (menu.value.open) closeMenu()
+    else selectedId.value = ''
+  }
   if ((event.ctrlKey || event.metaKey) && event.key === '0') {
     event.preventDefault()
     resetView()
@@ -911,6 +985,12 @@ onMounted(() => {
 // 数据变化后重新适配一次
 watch(
   () => modules.value.length,
+  () => nextTick(() => fitView()),
+)
+
+// 进入/退出聚焦时重新适配（子图范围变了）
+watch(
+  () => selectedId.value,
   () => nextTick(() => fitView()),
 )
 
@@ -1155,6 +1235,14 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
+}
+
+.canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .canvas {
@@ -1185,7 +1273,7 @@ onBeforeUnmount(() => {
 .zoom-bar {
   position: absolute;
   left: 14px;
-  bottom: 12px;
+  top: 12px;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -1556,6 +1644,168 @@ onBeforeUnmount(() => {
   margin-left: auto;
   font-family: Consolas, monospace;
   color: #5d7a7e;
+}
+
+/* ---------------- 画布浮层 ---------------- */
+.canvas-legend {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  display: flex;
+  gap: 14px;
+  font-size: 10.5px;
+  color: #6f878c;
+  pointer-events: none;
+}
+
+.canvas-stats {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 11px;
+  border-radius: 7px;
+  background: rgba(12, 20, 26, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10.5px;
+  pointer-events: none;
+}
+
+.stat-row {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.stat-k {
+  color: #5d7a7e;
+}
+
+.stat-v {
+  color: #a9c2c2;
+  font-family: Consolas, monospace;
+}
+
+/* ---------------- 底部详情面板 ---------------- */
+.detail-panel {
+  flex-shrink: 0;
+  height: 208px;
+  display: flex;
+  gap: 22px;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.dp-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dp-main { flex: 1.25; }
+.dp-side { flex: 1; }
+.dp-files { width: 250px; flex-shrink: 0; }
+
+.dp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.dp-name {
+  font-family: Consolas, monospace;
+  font-size: 13px;
+  color: #dff1ee;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dp-close {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #6f878c;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.dp-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6eef0;
+}
+
+.dp-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #4d6669;
+}
+
+.dp-desc {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #b6cfcd;
+  overflow-y: auto;
+}
+
+.dp-desc.ai { color: #8fe3d2; }
+.dp-desc.bad { color: #ff9e94; }
+
+.dp-meta {
+  margin: 0;
+  font-size: 11px;
+  color: #6d8b8f;
+  font-family: Consolas, monospace;
+}
+
+.dp-issues {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: #ff9e94;
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow-y: auto;
+}
+
+.dp-rel {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.dp-rel li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.dp-rel li:hover {
+  background: rgba(53, 224, 200, 0.1);
+}
+
+.dp-files .chips {
+  overflow-y: auto;
 }
 
 /* ---------------- 右键菜单 ---------------- */
