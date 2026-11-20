@@ -28,6 +28,8 @@ import com.intellij.psi.util.PsiTreeUtil
 data class ProjectGraph(
     val success: Boolean = true,
     val projectName: String = "",
+    val projectPath: String = "",
+    val contentRoots: List<String> = emptyList(),
     val message: String = "",
     val notice: String = "",
     val stats: GraphStats = GraphStats(),
@@ -135,10 +137,17 @@ object ModuleScanService {
     private const val MAX_MODULES = 80
 
     /**
-     * 明显不该扫的根目录：用户主目录、磁盘根。
-     * 在这种目录上扫会得到上千个模块（浏览器缓存、Office 插件、node_modules 之外的杂物），
-     * 图完全不可用，而且很慢。
+     * 明显不该扫的目录：用户主目录、磁盘根。
+     * 在这种目录上扫会得到上千个模块（Office 插件、浏览器缓存、JDK 头文件…），
+     * 图完全不可用，而且会占满扫描预算，把真正的项目文件挤出去。
      */
+    private fun isPathological(path: String): Boolean {
+        val normalized = path.replace('\\', '/').trimEnd('/')
+        val home = System.getProperty("user.home")?.replace('\\', '/')?.trimEnd('/')
+        if (home != null && normalized.equals(home, ignoreCase = true)) return true
+        return Regex("""^[A-Za-z]:$""").matches(normalized)
+    }
+
     private fun pathologicalRoot(basePath: String?): String? {
         if (basePath.isNullOrBlank()) return null
         val normalized = basePath.replace('\\', '/').trimEnd('/')
@@ -146,11 +155,10 @@ object ModuleScanService {
 
         if (home != null && normalized.equals(home, ignoreCase = true)) {
             return "当前打开的项目根是用户主目录（$basePath），里面是各种软件缓存和配置，不是代码仓库。" +
-                "请用 File → Open 打开具体的项目文件夹，或把这个目录下的代码仓库单独打开。"
+                "请用 File → Open 打开具体的项目文件夹。"
         }
         if (Regex("""^[A-Za-z]:$""").matches(normalized)) {
-            return "当前打开的是磁盘根目录（$basePath），范围太大会扫出上千个模块。" +
-                "请打开具体的项目文件夹。"
+            return "当前打开的是磁盘根目录（$basePath），范围太大。请打开具体的项目文件夹。"
         }
         return null
     }
@@ -172,7 +180,27 @@ object ModuleScanService {
             return ProjectGraph(success = false, projectName = project.name, message = reason)
         }
 
-        val hits = collect(project)
+        // 真正决定扫描范围的是「内容根」，不是 project.basePath。
+        // 项目里如果混进了用户主目录/磁盘根，必须跳过，否则会把整个 C 盘扫进来。
+        val allRoots = com.intellij.openapi.roots.ProjectRootManager
+            .getInstance(project).contentRoots
+            .map { it.path.replace('\\', '/').trimEnd('/') }
+
+        val badRoots = allRoots.filter { isPathological(it) }
+        val goodRoots = allRoots - badRoots.toSet()
+
+        if (allRoots.isNotEmpty() && goodRoots.isEmpty()) {
+            return ProjectGraph(
+                success = false,
+                projectName = project.name,
+                projectPath = project.basePath?.replace('\\', '/') ?: "",
+                contentRoots = allRoots,
+                message = "项目的内容根只有系统目录：" + allRoots.joinToString("、") +
+                    "。这些不是代码目录，请检查 Project Structure → Modules 里的内容根，或重新打开正确的项目文件夹。"
+            )
+        }
+
+        val hits = collect(project, badRoots)
         if (hits.isEmpty()) {
             return ProjectGraph(
                 success = false,
@@ -209,6 +237,8 @@ object ModuleScanService {
         return ProjectGraph(
             success = true,
             projectName = project.name,
+            projectPath = project.basePath?.replace('\\', '/') ?: "",
+            contentRoots = allRoots,
             notice = if (truncated) {
                 "模块太多（共 ${allModules.size} 个），这里只显示体积最大的 $MAX_MODULES 个。" +
                     "建议打开更具体的子目录，或确认项目根是否正确。"
@@ -228,7 +258,7 @@ object ModuleScanService {
         )
     }
 
-    private fun collect(project: Project): List<Hit> {
+    private fun collect(project: Project, skippedRoots: List<String> = emptyList()): List<Hit> {
         val index = ProjectFileIndex.getInstance(project)
         val psiManager = PsiManager.getInstance(project)
         val hits = ArrayList<Hit>()
@@ -240,6 +270,13 @@ object ModuleScanService {
             if (hits.size >= MAX_FILES) return@iterateContent false
 
             if (vf.isDirectory) return@iterateContent true
+
+            // 跳过用户主目录/磁盘根这类内容根
+            if (skippedRoots.isNotEmpty()) {
+                val p = vf.path.replace('\\', '/')
+                if (skippedRoots.any { p.startsWith(it) }) return@iterateContent true
+            }
+
             if (vf.length <= 0 || vf.length > MAX_FILE_BYTES) return@iterateContent true
             if (skipByPath(vf)) return@iterateContent true
 
