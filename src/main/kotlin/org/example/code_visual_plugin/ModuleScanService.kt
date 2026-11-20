@@ -180,31 +180,39 @@ object ModuleScanService {
             return ProjectGraph(success = false, projectName = project.name, message = reason)
         }
 
-        // 真正决定扫描范围的是「内容根」，不是 project.basePath。
-        // 项目里如果混进了用户主目录/磁盘根，必须跳过，否则会把整个 C 盘扫进来。
+        val basePath = project.basePath?.replace('\\', '/')?.trimEnd('/')
         val allRoots = com.intellij.openapi.roots.ProjectRootManager
             .getInstance(project).contentRoots
             .map { it.path.replace('\\', '/').trimEnd('/') }
 
-        val badRoots = allRoots.filter { isPathological(it) }
-        val goodRoots = allRoots - badRoots.toSet()
+        // 只信任「项目目录之内」的内容根。
+        // IDEA 的 Gradle 导入偶尔会写出指向项目外面的相对路径（我们踩到过
+        // ../.. 解析成 C:\Users\<user>），那样会把整个用户目录甚至磁盘扫进来。
+        // 规则：内容根必须等于 basePath 或在 basePath 之下；否则忽略。
+        val allowed = allRoots.filter { root ->
+            basePath != null && (root == basePath || root.startsWith("$basePath/"))
+        }
+        val effectiveRoots = allowed.ifEmpty { listOfNotNull(basePath) }
 
-        if (allRoots.isNotEmpty() && goodRoots.isEmpty()) {
+        if (effectiveRoots.isEmpty()) {
             return ProjectGraph(
                 success = false,
                 projectName = project.name,
-                projectPath = project.basePath?.replace('\\', '/') ?: "",
+                projectPath = basePath ?: "",
                 contentRoots = allRoots,
-                message = "项目的内容根只有系统目录：" + allRoots.joinToString("、") +
-                    "。这些不是代码目录，请检查 Project Structure → Modules 里的内容根，或重新打开正确的项目文件夹。"
+                message = "无法确定项目目录，扫描已跳过。"
             )
         }
 
-        val hits = collect(project, badRoots)
+        val ignoredRoots = allRoots - effectiveRoots.toSet()
+
+        val hits = collect(project, effectiveRoots)
         if (hits.isEmpty()) {
             return ProjectGraph(
                 success = false,
                 projectName = project.name,
+                projectPath = basePath ?: "",
+                contentRoots = allRoots,
                 message = "项目里没有找到可识别的源码文件（已支持 " +
                     LANGUAGES.values.distinct().joinToString("、") + "）"
             )
@@ -238,12 +246,14 @@ object ModuleScanService {
             success = true,
             projectName = project.name,
             projectPath = project.basePath?.replace('\\', '/') ?: "",
-            contentRoots = allRoots,
-            notice = if (truncated) {
-                "模块太多（共 ${allModules.size} 个），这里只显示体积最大的 $MAX_MODULES 个。" +
+            contentRoots = effectiveRoots,
+            notice = when {
+                truncated -> "模块太多（共 ${allModules.size} 个），这里只显示体积最大的 $MAX_MODULES 个。" +
                     "建议打开更具体的子目录，或确认项目根是否正确。"
-            } else {
-                ""
+                ignoredRoots.isNotEmpty() -> "已忽略 " + ignoredRoots.size +
+                    " 个指向项目目录之外的内容根（" + ignoredRoots.take(2).joinToString("、") +
+                    "），只扫描了项目自身目录。"
+                else -> ""
             },
             stats = GraphStats(
                 modules = nodes.size,
@@ -258,7 +268,7 @@ object ModuleScanService {
         )
     }
 
-    private fun collect(project: Project, skippedRoots: List<String> = emptyList()): List<Hit> {
+    private fun collect(project: Project, allowedRoots: List<String> = emptyList()): List<Hit> {
         val index = ProjectFileIndex.getInstance(project)
         val psiManager = PsiManager.getInstance(project)
         val hits = ArrayList<Hit>()
@@ -271,10 +281,10 @@ object ModuleScanService {
 
             if (vf.isDirectory) return@iterateContent true
 
-            // 跳过用户主目录/磁盘根这类内容根
-            if (skippedRoots.isNotEmpty()) {
+            // 只扫描落在允许的内容根之内的文件
+            if (allowedRoots.isNotEmpty()) {
                 val p = vf.path.replace('\\', '/')
-                if (skippedRoots.any { p.startsWith(it) }) return@iterateContent true
+                if (allowedRoots.none { p == it || p.startsWith("$it/") }) return@iterateContent true
             }
 
             if (vf.length <= 0 || vf.length > MAX_FILE_BYTES) return@iterateContent true
