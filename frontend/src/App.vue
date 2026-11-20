@@ -192,7 +192,7 @@
         <button class="zoom-btn" title="放大" @click="zoomBy(1.2)">＋</button>
         <button class="zoom-btn" title="缩小" @click="zoomBy(1 / 1.2)">－</button>
         <button class="zoom-btn wide" title="适应窗口" @click="fitView">适应</button>
-        <button class="zoom-btn wide" title="实际大小（Ctrl+0）" @click="resetView">100%</button>
+        <button class="zoom-btn wide" title="实际大小（Ctrl+0）" @click="resetView">1:1</button>
         <span class="zoom-val">{{ Math.round(view.k * 100) }}%</span>
       </div>
 
@@ -221,14 +221,16 @@
       <p v-if="!selected" class="stage-hint">点击模块进入聚焦 · 滚轮缩放 · 空白处拖拽平移</p>
       </div>
 
-      <!-- 下半部分：当前模块介绍 -->
+      <!-- 下半部分：当前模块介绍（宽度不够时自动换行成单列） -->
       <section v-if="selected" class="detail-panel">
-        <div class="dp-col dp-main">
+        <div class="dp-main">
           <div class="dp-head">
             <span class="badge" :style="{ color: roleColor(selected.role) }">{{ selected.role }}</span>
-            <span class="dp-name">{{ selected.name }}</span>
+            <span class="dp-title">{{ selected.shortName }}</span>
             <button class="dp-close" title="回到全图（Esc）" @click="selectedId = ''">×</button>
           </div>
+
+          <p class="dp-path" :title="selected.name">{{ selected.name }}</p>
 
           <p v-if="selected.advice" class="dp-label">修改意见</p>
           <p
@@ -236,22 +238,21 @@
             :class="{ ai: selected.descState === 'ai', bad: selected.descState === 'error' }"
           >{{ selected.desc }}</p>
 
-          <p class="dp-meta">
-            {{ selected.fileCount }} 文件 · {{ selected.lineCount }} 行 · {{ selected.language }}
-          </p>
-
-          <template v-if="selected.issues && selected.issues.length">
-            <p class="dp-label">问题</p>
-            <ul class="dp-issues">
-              <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
-            </ul>
-          </template>
+          <div class="dp-meta">
+            <span>{{ selected.fileCount }} 文件</span>
+            <span>{{ selected.lineCount }} 行</span>
+            <span>{{ selected.language }}</span>
+            <span>{{ selectedRelations.length }} 条关联</span>
+            <span v-if="selected.issues && selected.issues.length">
+              {{ selected.issues.length }} 个问题
+            </span>
+          </div>
         </div>
 
-        <div class="dp-col dp-side">
-          <p class="dp-label">关联模块（{{ selectedRelations.length }}）· 点击切换</p>
+        <div class="dp-block">
+          <p class="dp-label">关联模块（{{ selectedRelations.length }}）</p>
           <ul class="dp-rel">
-            <li v-for="(r, i) in selectedRelations" :key="i" @click="selectedId = r.id">
+            <li v-for="(r, i) in selectedRelations" :key="i">
               <span class="rel-dir">{{ r.dir }}</span>
               <span class="rel-name">{{ r.other }}</span>
               <span class="rel-note">{{ r.label }}</span>
@@ -259,9 +260,16 @@
           </ul>
         </div>
 
-        <div class="dp-col dp-files">
-          <p class="dp-label">文件（{{ selected.fileCount }}）· 点击跳转</p>
-          <div class="chips">
+        <div v-if="selected.signatures && selected.signatures.length" class="dp-block">
+          <p class="dp-label">关键签名（{{ selected.signatures.length }}）</p>
+          <ul class="dp-sig">
+            <li v-for="(s, i) in selected.signatures.slice(0, 8)" :key="i" :title="s">{{ s }}</li>
+          </ul>
+        </div>
+
+        <div class="dp-block">
+          <p class="dp-label">文件（{{ selected.fileCount }}）· 点击打开</p>
+          <div class="chips chips-row">
             <button
               v-for="c in selected.files"
               :key="c"
@@ -270,6 +278,13 @@
               @click="openInIde(selected.id, c)"
             >{{ c }}</button>
           </div>
+        </div>
+
+        <div v-if="selected.issues && selected.issues.length" class="dp-block">
+          <p class="dp-label">问题</p>
+          <ul class="dp-issues">
+            <li v-for="(it, i) in selected.issues" :key="i">{{ it }}</li>
+          </ul>
         </div>
       </section>
     </div>
@@ -619,6 +634,7 @@ function onPanUp() {
 
 const viewport = reactive({ w: 900, h: 640 })
 let resizeObserver = null
+let observedEl = null
 let userAdjusted = false
 
 const contentBounds = computed(() => {
@@ -965,22 +981,42 @@ onMounted(() => {
   window.addEventListener('click', closeMenu)
   window.addEventListener('keydown', onGlobalKey)
 
-  // 画布尺寸 → viewBox，保证 100% 就是真实像素
-  const svg = svgEl.value
-  if (svg) {
-    viewport.w = Math.max(200, svg.clientWidth || 900)
-    viewport.h = Math.max(200, svg.clientHeight || 640)
-
-    resizeObserver = new ResizeObserver((entries) => {
-      const box = entries[0]?.contentRect
-      if (!box) return
-      viewport.w = Math.max(200, box.width)
-      viewport.h = Math.max(200, box.height)
-      if (!userAdjusted) fitView()
-    })
-    resizeObserver.observe(svg)
-  }
 })
+
+/**
+ * 画布尺寸 → viewBox，保证 100% 就是真实像素。
+ * 注意：svg 在数据到达前不存在（v-else），所以只能等 ref 出现后再绑定，
+ * 不能在 onMounted 里直接读——否则拿到 null，viewport 永远停在默认值，
+ * 页面会被 preserveAspectRatio 二次缩放，看起来"上方大片空白、卡片很小"。
+ */
+function attachCanvas(el) {
+  if (!el || el === observedEl) return
+  if (resizeObserver) resizeObserver.disconnect()
+  observedEl = el
+
+  viewport.w = Math.max(200, el.clientWidth || 900)
+  viewport.h = Math.max(200, el.clientHeight || 640)
+
+  resizeObserver = new ResizeObserver((entries) => {
+    const box = entries[0]?.contentRect
+    if (!box) return
+    viewport.w = Math.max(200, box.width)
+    viewport.h = Math.max(200, box.height)
+    if (!userAdjusted) fitView()
+  })
+  resizeObserver.observe(el)
+
+  userAdjusted = false
+  fitView()
+}
+
+watch(
+  svgEl,
+  (el) => {
+    if (el) nextTick(() => attachCanvas(el))
+  },
+  { flush: 'post' },
+)
 
 // 数据变化后重新适配一次
 watch(
@@ -1285,9 +1321,9 @@ onBeforeUnmount(() => {
 }
 
 .zoom-btn {
-  min-width: 26px;
-  height: 24px;
-  padding: 0 5px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 3px;
   background: transparent;
   border: none;
   border-radius: 5px;
@@ -1298,7 +1334,7 @@ onBeforeUnmount(() => {
 }
 
 .zoom-btn.wide {
-  font-size: 11.5px;
+  font-size: 10.5px;
 }
 
 .zoom-btn:hover {
@@ -1307,9 +1343,9 @@ onBeforeUnmount(() => {
 }
 
 .zoom-val {
-  min-width: 38px;
+  min-width: 32px;
   text-align: center;
-  font-size: 11px;
+  font-size: 10px;
   color: #6f878c;
   font-family: Consolas, monospace;
 }
@@ -1691,40 +1727,40 @@ onBeforeUnmount(() => {
 /* ---------------- 底部详情面板 ---------------- */
 .detail-panel {
   flex-shrink: 0;
-  height: 208px;
+  max-height: 46%;
+  overflow-y: auto;
   display: flex;
-  gap: 22px;
-  padding: 14px 18px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px 26px;
+  padding: 14px 18px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(255, 255, 255, 0.02);
-  overflow: hidden;
 }
 
-.dp-col {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
+/* 窄窗口自动换行：宽度不够时每块各占一行 */
+.dp-main {
+  flex: 1 1 340px;
+  min-width: 240px;
 }
 
-.dp-main { flex: 1.25; }
-.dp-side { flex: 1; }
-.dp-files { width: 250px; flex-shrink: 0; }
+.dp-block {
+  flex: 1 1 190px;
+  min-width: 170px;
+}
 
 .dp-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 9px;
+  margin-bottom: 6px;
 }
 
-.dp-name {
+.dp-title {
   font-family: Consolas, monospace;
-  font-size: 13px;
-  color: #dff1ee;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: #eaf6f4;
 }
 
 .dp-close {
@@ -1747,6 +1783,15 @@ onBeforeUnmount(() => {
   color: #e6eef0;
 }
 
+.dp-path {
+  margin: 0 0 10px;
+  font-family: Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #5d7a7e;
+  word-break: break-all;
+}
+
 .dp-label {
   margin: 0 0 6px;
   font-size: 10.5px;
@@ -1756,36 +1801,30 @@ onBeforeUnmount(() => {
 }
 
 .dp-desc {
-  margin: 0 0 8px;
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: #b6cfcd;
-  overflow-y: auto;
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: #b8d1cf;
 }
 
 .dp-desc.ai { color: #8fe3d2; }
 .dp-desc.bad { color: #ff9e94; }
 
 .dp-meta {
-  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-family: Consolas, monospace;
   font-size: 11px;
   color: #6d8b8f;
-  font-family: Consolas, monospace;
 }
 
-.dp-issues {
-  margin: 4px 0 0;
-  padding-left: 16px;
-  color: #ff9e94;
-  font-size: 11.5px;
-  line-height: 1.6;
-  overflow-y: auto;
-}
-
+/* 关联：只表达关系，不可点选 */
 .dp-rel {
   margin: 0;
   padding: 0;
   list-style: none;
+  max-height: 120px;
   overflow-y: auto;
 }
 
@@ -1793,21 +1832,65 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  padding: 3px 5px;
-  border-radius: 4px;
+  padding: 3px 0;
   font-size: 11.5px;
   line-height: 1.55;
-  cursor: pointer;
 }
 
-.dp-rel li:hover {
-  background: rgba(53, 224, 200, 0.1);
+.rel-dir {
+  flex-shrink: 0;
+  color: #35e0c8;
+  font-family: Consolas, monospace;
 }
 
-.dp-files .chips {
+.rel-name {
+  flex-shrink: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #cfe9e5;
+  font-family: Consolas, monospace;
+}
+
+.rel-note {
+  color: #7d9599;
+  word-break: break-word;
+}
+
+.dp-sig {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 120px;
   overflow-y: auto;
 }
 
+.dp-sig li {
+  padding: 3px 0;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #8fa9ac;
+  word-break: break-all;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.chips-row {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.dp-issues {
+  margin: 0;
+  padding-left: 16px;
+  color: #ff9e94;
+  font-size: 11.5px;
+  line-height: 1.6;
+  max-height: 100px;
+  overflow-y: auto;
+}
 /* ---------------- 右键菜单 ---------------- */
 .ctx-menu {
   position: fixed;
