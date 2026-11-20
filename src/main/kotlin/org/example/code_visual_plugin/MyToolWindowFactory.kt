@@ -15,15 +15,23 @@ class MyToolWindowFactory : ToolWindowFactory {
         /** vite 开发服务器默认端口 */
         const val DEV_SERVER_PORT = 5173
 
-        /** 极短的 TCP 探测：只判断端口是否有人监听，不发 HTTP 请求 */
-        fun isPortOpen(port: Int): Boolean = try {
+        /**
+         * 探测某个地址族上是否有监听。
+         * 注意 vite 在 Windows 上常常只绑 IPv6 的 ::1，
+         * 只试 127.0.0.1 会误判成"没有 dev server"。
+         */
+        private fun isPortOpen(host: String, port: Int): Boolean = try {
             java.net.Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 120)
+                socket.connect(java.net.InetSocketAddress(host, port), 150)
                 true
             }
         } catch (e: Throwable) {
             false
         }
+
+        /** 两种回环地址都试一遍 */
+        fun isDevServerUp(port: Int): Boolean =
+            isPortOpen("127.0.0.1", port) || isPortOpen("::1", port)
     }
 
     override fun shouldBeAvailable(project: Project) = true
@@ -63,11 +71,14 @@ class MyToolWindowFactory : ToolWindowFactory {
         //   2. 没有指定、但本机 5173 上跑着 vite，则自动切过去（改前端不用重装插件）
         // 生产：直接读插件 jar 里的 web/ 产物，不依赖任何外部进程
         val explicitDev = System.getProperty("codecanvas.devServer")?.trim()?.takeIf { it.isNotEmpty() }
+        val devUp = explicitDev == null && isDevServerUp(DEV_SERVER_PORT)
+
+        // 用 localhost 而不是 127.0.0.1：vite 可能只绑了 IPv6 的 ::1
         val url = explicitDev
-            ?: if (isPortOpen(DEV_SERVER_PORT)) "http://127.0.0.1:$DEV_SERVER_PORT" else "http://127.0.0.1:${PluginHttpServer.PORT}/"
+            ?: if (devUp) "http://localhost:$DEV_SERVER_PORT/" else "http://127.0.0.1:${PluginHttpServer.PORT}/"
 
         Logger.getInstance(MyToolWindowFactory::class.java)
-            .info("CodeCanvas: loading $url (dev=${explicitDev != null || url.contains(":$DEV_SERVER_PORT")})")
+            .info("CodeCanvas: loading $url (dev=${explicitDev != null || devUp})")
 
         val browser = JBCefBrowser()
         browser.loadURL(url)
