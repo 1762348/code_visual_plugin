@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>org.example.code_visual_plugin</id>
     <name>CodeVisualPlugin</name>
-    <version>1.0</version>
+    <version>0.1.0</version>
     <vendor>org.example</vendor>
 
     <description><![CDATA[
