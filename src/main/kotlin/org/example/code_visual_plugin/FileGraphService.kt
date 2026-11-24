@@ -91,7 +91,8 @@ object FileGraphService {
             connected.add(e.to)
         }
 
-        val visible = files.filter { idOf(it) in connected }
+        // 一条边都没有时（例如单文件模块）不要给空画布，直接把文件列出来
+        val visible = if (edges.isEmpty()) files else files.filter { idOf(it) in connected }
         val hidden = files.size - visible.size
 
         val nodes = visible.map { file ->
