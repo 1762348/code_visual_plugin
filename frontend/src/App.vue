@@ -61,7 +61,7 @@
     </div>
 
     <div v-else class="stage" :class="{ focused: !!selected }">
-      <div class="canvas-wrap" :class="{ files: !!fileView }">
+      <div ref="wrapEl" class="canvas-wrap" :class="{ files: !!fileView }">
       <svg
         ref="svgEl"
         class="canvas"
@@ -932,6 +932,9 @@ const fileRowWidth = computed(() => {
 /** 三级用固定尺寸，不缩放；容器横向滚动 */
 const fileViewBox = computed(() => `0 0 ${fileRowWidth.value} ${CARD_H + 48}`)
 
+/** 组件之间横向排列的间距 */
+const COMPONENT_GAP = 72
+
 const placed = computed(() => {
   const nodes = canvasNodes.value
   if (!nodes.length) return []
@@ -946,38 +949,98 @@ const placed = computed(() => {
     }))
   }
 
-  const layer = layerOf(nodes, relations.value)
-  const byLayer = new Map()
+  const edges = canvasEdges.value
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+
+  // --- 1. 按边求连通分量（没有边的节点各自成组）---
+  const adj = new Map(nodes.map((n) => [n.id, new Set()]))
+  for (const e of edges) {
+    if (!byId.has(e.from) || !byId.has(e.to)) continue
+    adj.get(e.from).add(e.to)
+    adj.get(e.to).add(e.from)
+  }
+
+  const seen = new Set()
+  const components = []
   for (const n of nodes) {
-    const l = layer.get(n.id) || 0
-    if (!byLayer.has(l)) byLayer.set(l, [])
-    byLayer.get(l).push(n)
-  }
-
-  // 每层按包名排序；超过 MAX_PER_COLUMN 就拆成多列，
-  // 否则 10 个模块会摞成一根长条，自适应之后字小到看不清
-  const columns = []
-  for (const [, list] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
-    list.sort((a, b) => a.name.localeCompare(b.name))
-    for (let i = 0; i < list.length; i += MAX_PER_COLUMN) {
-      columns.push(list.slice(i, i + MAX_PER_COLUMN))
+    if (seen.has(n.id)) continue
+    const stack = [n.id]
+    const comp = []
+    seen.add(n.id)
+    while (stack.length) {
+      const id = stack.pop()
+      comp.push(byId.get(id))
+      for (const nb of adj.get(id)) {
+        if (!seen.has(nb)) {
+          seen.add(nb)
+          stack.push(nb)
+        }
+      }
     }
+    components.push(comp)
   }
+  components.sort((a, b) => b.length - a.length)
 
+  // --- 2. 每个分量内部按依赖分层（左→右），同层分支才纵向堆叠 ---
+  const blocks = components.map((comp) => {
+    const ids = new Set(comp.map((n) => n.id))
+    const compEdges = edges.filter((e) => ids.has(e.from) && ids.has(e.to))
+    const layer = layerOf(comp, compEdges)
+
+    const byLayer = new Map()
+    for (const n of comp) {
+      const l = layer.get(n.id) || 0
+      if (!byLayer.has(l)) byLayer.set(l, [])
+      byLayer.get(l).push(n)
+    }
+
+    const columns = []
+    for (const [, list] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
+      list.sort((a, b) => a.name.localeCompare(b.name))
+      for (let k = 0; k < list.length; k += MAX_PER_COLUMN) {
+        columns.push(list.slice(k, k + MAX_PER_COLUMN))
+      }
+    }
+
+    const rows = Math.max(1, ...columns.map((col) => col.length))
+    return {
+      columns,
+      width: Math.max(1, columns.length) * (CARD_W + GAP_X) - GAP_X,
+      height: rows * CARD_H + (rows - 1) * GAP_Y,
+    }
+  })
+
+  // --- 3. 分量横排填满宽度，放不下再换行 ---
+  const maxRowWidth = Math.max(CARD_W * 2, viewport.w - 96)
   const result = []
-  columns.forEach((col, ci) => {
-    col.forEach((node, ri) => {
-      result.push({
-        node,
-        x: ci * (CARD_W + GAP_X),
-        y: (ri - (col.length - 1) / 2) * (CARD_H + GAP_Y),
-        lines: wrapText(node.desc, 23).slice(0, MAX_DESC_LINES),
+  let cursorX = 0
+  let cursorY = 0
+  let rowHeight = 0
+
+  for (const block of blocks) {
+    if (cursorX > 0 && cursorX + block.width > maxRowWidth) {
+      cursorX = 0
+      cursorY += rowHeight + GAP_Y
+      rowHeight = 0
+    }
+
+    block.columns.forEach((col, ci) => {
+      col.forEach((node, ri) => {
+        result.push({
+          node,
+          x: cursorX + ci * (CARD_W + GAP_X),
+          y: cursorY + (ri - (col.length - 1) / 2) * (CARD_H + GAP_Y) + block.height / 2,
+          lines: wrapText(node.desc, 23).slice(0, MAX_DESC_LINES),
+        })
       })
     })
-  })
+
+    cursorX += block.width + COMPONENT_GAP
+    rowHeight = Math.max(rowHeight, block.height)
+  }
+
   return result
 })
-
 const boxById = computed(() => {
   const m = new Map()
   for (const p of placed.value) m.set(p.node.id, p)
@@ -987,6 +1050,7 @@ const boxById = computed(() => {
 /* ------------------------------ 缩放 / 平移 ------------------------------ */
 
 const svgEl = ref(null)
+const wrapEl = ref(null)
 const view = reactive({ k: 1, x: 0, y: 0 })
 const panning = ref(false)
 let panStart = null
@@ -1011,7 +1075,11 @@ function applyZoom(cx, cy, nextK) {
 }
 
 function onWheel(evt) {
-  if (fileView.value) return
+  if (fileView.value) {
+    // 三级是横向排布：滚轮直接横向滚动
+    if (wrapEl.value) wrapEl.value.scrollLeft += evt.deltaY
+    return
+  }
   userAdjusted = true
   const p = toViewBox(evt)
   const factor = evt.deltaY < 0 ? 1.12 : 1 / 1.12
@@ -1098,12 +1166,15 @@ function centerAt(k) {
 /** 适应窗口，但不会缩到读不清的程度（再小就靠用户自己缩） */
 const MIN_FIT = 0.7
 
+/** 内容少时最多放大到 1.35 倍，尽量填满画布 */
+const MAX_FIT = 1.35
+
 function fitView() {
   const b = contentBounds.value
   if (!b.w || !b.h) return
   const pad = 28
-  const k = Math.min(1, Math.min((viewport.w - pad * 2) / b.w, (viewport.h - pad * 2) / b.h))
-  centerAt(Math.max(MIN_FIT, k))
+  const k = Math.min(MAX_FIT, Math.min((viewport.w - pad * 2) / b.w, (viewport.h - pad * 2) / b.h))
+  centerAt(Math.min(MAX_FIT, Math.max(MIN_FIT, k)))
   userAdjusted = false
 }
 
@@ -2418,17 +2489,20 @@ onBeforeUnmount(() => {
 /* ---------------- 逐行解释 ---------------- */
 .explain-wrap {
   flex: 1 1 100%;
+  align-self: stretch;      /* 关键：flex-start 下不会撑满，列表就滚不动 */
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .line-list {
   margin: 6px 0 0;
-  padding: 0;
+  padding: 0 4px 0 0;
   list-style: none;
   overflow-y: auto;
+  overscroll-behavior: contain;
   flex: 1;
   min-height: 0;
 }
