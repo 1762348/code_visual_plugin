@@ -134,6 +134,10 @@ object PluginHttpServer {
                     }
                     write(response, gson.toJson(mapOf("ok" to (p != null))))
                 }
+                path == "/api/moduleFiles" -> write(
+                    response,
+                    gson.toJson(buildFileGraph(queryParam(query, "moduleId")))
+                )
                 path == "/api/open" -> write(
                     response,
                     gson.toJson(openInEditor(queryParam(query, "moduleId"), queryParam(query, "file")))
@@ -226,6 +230,18 @@ object PluginHttpServer {
             "path" to target.path,
             "selected" to opened
         )
+    }
+
+    private fun buildFileGraph(moduleId: String?): FileGraph {
+        if (moduleId.isNullOrBlank()) {
+            return FileGraph(success = false, message = "缺少 moduleId")
+        }
+        return try {
+            FileGraphService.build(moduleId)
+        } catch (e: Throwable) {
+            log.error("buildFileGraph failed", e)
+            FileGraph(success = false, moduleId = moduleId, message = describe(e))
+        }
     }
 
     private fun parseCurrentFileJson(): String {

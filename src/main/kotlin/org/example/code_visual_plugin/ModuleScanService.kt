@@ -106,7 +106,7 @@ object ModuleScanService {
     private val PREFIXES = listOf("src/", "app/", "lib/")
 
     /** 扩展名 → 语言。白名单本身就是"什么算代码"的定义。 */
-    private val LANGUAGES = mapOf(
+    val LANGUAGES = mapOf(
         "java" to "Java", "kt" to "Kotlin", "kts" to "Kotlin", "groovy" to "Groovy",
         "scala" to "Scala", "vue" to "Vue", "js" to "JavaScript", "mjs" to "JavaScript",
         "cjs" to "JavaScript", "jsx" to "JSX", "ts" to "TypeScript", "tsx" to "TSX",
@@ -118,7 +118,7 @@ object ModuleScanService {
     )
 
     /** 提取 import 目标：不同语言各一条，捕获组 1 = 被引用目标 */
-    private val IMPORT_HINTS = listOf(
+    val IMPORT_HINTS = listOf(
         Regex("""import\s+static\s+([\w.$*]+)"""),               // Java static
         Regex("""^\s*import\s+([\w.$]+)\s*;?""", RegexOption.MULTILINE), // Java/Kotlin/C#
         Regex("""from\s+['"]([^'"]+)['"]"""),                   // JS/TS/Vue ESM

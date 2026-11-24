@@ -110,9 +110,9 @@
           v-for="m in placed"
           :key="m.node.id"
           class="module"
-          :class="{ selected: m.node.id === selectedId }"
-          @click="selectedId = m.node.id"
-          @dblclick="openInIde(m.node.id)"
+          :class="{ selected: m.node.id === activeNodeId }"
+          @click="onNodeClick(m.node.id)"
+          @dblclick="onNodeDblClick(m.node.id)"
           @contextmenu.prevent.stop="openMenu($event, m.node.id)"
         >
           <title>{{ m.node.name }}
@@ -126,8 +126,8 @@
             :height="CARD_H"
             rx="12"
             :fill="fillOf(m.node)"
-            :stroke="m.node.id === selectedId ? '#35e0c8' : borderColorOf(m.node)"
-            :stroke-width="m.node.id === selectedId ? 1.8 : 1"
+            :stroke="m.node.id === activeNodeId ? '#35e0c8' : borderColorOf(m.node)"
+            :stroke-width="m.node.id === activeNodeId ? 1.8 : 1"
           />
 
           <!-- 左侧职责色条 -->
@@ -167,7 +167,7 @@
           >{{ line }}</text>
 
           <text :x="m.x + 20" :y="m.y + CARD_H - 13" class="m-stat">
-            {{ m.node.fileCount }} 文件 · {{ m.node.lineCount }} 行
+            {{ m.node.statText || m.node.fileCount + ' 文件 · ' + m.node.lineCount + ' 行' }}
           </text>
 
           <text
@@ -188,6 +188,14 @@
         </g>
       </svg>
 
+      <div v-if="fileView" class="crumb-bar">
+        <button class="crumb" @click="exitFileView">全图</button>
+        <span class="crumb-sep">›</span>
+        <button class="crumb" @click="exitFileView">{{ fileView.moduleName }}</button>
+        <span class="crumb-sep">›</span>
+        <span class="crumb-current">{{ selectedFile ? selectedFile.name : '选择文件' }}</span>
+      </div>
+
       <div class="zoom-bar">
         <button class="zoom-btn" title="放大" @click="zoomBy(1.2)">＋</button>
         <button class="zoom-btn" title="缩小" @click="zoomBy(1 / 1.2)">－</button>
@@ -206,7 +214,13 @@
 
       <!-- 右下角：未聚焦时是全局统计，聚焦时是这条链路的处理量与规模 -->
       <div class="canvas-stats">
-        <template v-if="selected">
+        <template v-if="fileView">
+          <div class="stat-row"><span class="stat-k">文件</span><span class="stat-v">{{ fileView.stats.files }}</span></div>
+          <div class="stat-row"><span class="stat-k">引用</span><span class="stat-v">{{ fileView.stats.edges }}</span></div>
+          <div class="stat-row"><span class="stat-k">规模</span><span class="stat-v">{{ fileView.stats.lines }} 行</span></div>
+          <div v-if="fileView.stats.hidden" class="stat-row"><span class="stat-k">未显示</span><span class="stat-v">{{ fileView.stats.hidden }}</span></div>
+        </template>
+        <template v-else-if="selected">
           <div class="stat-row"><span class="stat-k">关联模块</span><span class="stat-v">{{ focusStats.related }}</span></div>
           <div class="stat-row"><span class="stat-k">数据流转</span><span class="stat-v">{{ focusStats.refs }} 次</span></div>
           <div class="stat-row"><span class="stat-k">链路规模</span><span class="stat-v">{{ focusStats.files }} 文件 / {{ focusStats.lines }} 行</span></div>
@@ -223,7 +237,59 @@
       </div>
 
       <!-- 下半部分：当前模块介绍（宽度不够时自动换行成单列） -->
-      <section v-if="selected" class="detail-panel">
+      <!-- 三级：文件详情 -->
+      <section v-if="fileView && selectedFile" class="detail-panel">
+        <div class="dp-main">
+          <div class="dp-head">
+            <span class="badge file-badge">文件</span>
+            <span class="dp-title">{{ selectedFile.name }}</span>
+            <button class="dp-close" title="返回模块（Esc）" @click="exitFileView">×</button>
+          </div>
+
+          <p class="dp-path">{{ fileView.moduleName }}/{{ selectedFile.name }}</p>
+
+          <div class="dp-meta">
+            <span>{{ selectedFile.lineCount }} 行</span>
+            <span>{{ selectedFile.language }}</span>
+            <span>{{ fileRelations.length }} 条引用</span>
+          </div>
+
+          <div class="dp-actions">
+            <button class="act-btn" @click="explainFile">逐行解释</button>
+            <button class="act-btn ghost" @click="openInIde(fileView.moduleId, selectedFile.name)">在编辑器打开</button>
+          </div>
+
+          <p v-if="explainHint" class="dp-hint">{{ explainHint }}</p>
+        </div>
+
+        <div class="dp-block">
+          <p class="dp-label">引用关系（{{ fileRelations.length }}）</p>
+          <ul class="dp-rel">
+            <li v-for="(r, i) in fileRelations" :key="i">
+              <span class="rel-dir">{{ r.dir }}</span>
+              <span class="rel-name">{{ r.name }}</span>
+              <span class="rel-note">{{ r.label }}</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 文件图里没选文件时：提示 -->
+      <section v-else-if="fileView" class="detail-panel">
+        <div class="dp-main">
+          <div class="dp-head">
+            <span class="badge file-badge">模块</span>
+            <span class="dp-title">{{ fileView.moduleName }}</span>
+            <button class="dp-close" title="返回全图（Esc）" @click="exitFileView">×</button>
+          </div>
+          <p class="dp-desc">
+            共 {{ fileView.stats.files }} 个有引用的文件、{{ fileView.stats.edges }} 条引用
+            <template v-if="fileView.stats.hidden">（另有 {{ fileView.stats.hidden }} 个无引用文件未显示）</template>
+          </p>
+          <p class="dp-hint">点击上方文件卡片查看详情</p>
+        </div>
+      </section>
+      <section v-else-if="selected" class="detail-panel">
         <div class="dp-main">
           <div class="dp-head">
             <span class="badge" :style="{ color: roleColor(selected.role) }">{{ selected.role }}</span>
@@ -238,6 +304,14 @@
             class="dp-desc"
             :class="{ ai: selected.descState === 'ai', bad: selected.descState === 'error' }"
           >{{ selected.desc }}</p>
+
+          <div class="dp-actions">
+            <button class="act-btn" @click="enterFileView(selected.id)">
+              查看文件关系（{{ selected.fileCount }}）
+            </button>
+          </div>
+
+          <p v-if="fileError" class="dp-hint error">{{ fileError }}</p>
 
           <div class="dp-meta">
             <span>{{ selected.fileCount }} 文件</span>
@@ -327,7 +401,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 
-const API = 'http://127.0.0.1:8899'
+// 允许用 ?api= 覆盖，便于用 mock 联调前端
+const API = new URLSearchParams(location.search).get('api') || 'http://127.0.0.1:8899'
 
 const CARD_W = 288
 const CARD_H = 132
@@ -601,6 +676,124 @@ const focusNodes = computed(() => {
   return modules.value.filter((n) => keep.has(n.id))
 })
 
+/* ---------------- 三级：模块内的文件图 ---------------- */
+
+const fileView = ref(null)          // { moduleId, moduleName, nodes, edges, stats }
+const fileLoading = ref(false)
+const fileError = ref('')
+const selectedFileId = ref('')
+const explainHint = ref('')
+
+/** 当前画布上的节点：三级时是文件，否则是模块 */
+const canvasNodes = computed(() => {
+  const view = fileView.value
+  if (!view) return focusNodes.value
+
+  const outCount = new Map()
+  const inCount = new Map()
+  for (const e of view.edges) {
+    outCount.set(e.from, (outCount.get(e.from) || 0) + 1)
+    inCount.set(e.to, (inCount.get(e.to) || 0) + 1)
+  }
+
+  return view.nodes.map((f) => ({
+    id: f.id,
+    name: f.name,
+    shortName: f.name.replace(/\.[^.]+$/, ''),
+    role: '文件',
+    desc: `引用 ${outCount.get(f.id) || 0} 处 · 被引用 ${inCount.get(f.id) || 0} 处`,
+    statText: `${f.lineCount} 行 · ${f.language}`,
+    descState: 'structural',
+    fileCount: 1,
+    lineCount: f.lineCount,
+    bytes: f.bytes,
+    language: f.language,
+    issues: [],
+    advice: '',
+    signatures: [],
+    files: [f.name],
+  }))
+})
+
+/** 当前画布上的边 */
+const canvasEdges = computed(() => (fileView.value ? fileView.value.edges : displayEdges.value))
+
+const activeNodeId = computed(() => (fileView.value ? selectedFileId.value : selectedId.value))
+
+const selectedFile = computed(() => {
+  const view = fileView.value
+  if (!view || !selectedFileId.value) return null
+  return view.nodes.find((n) => n.id === selectedFileId.value) || null
+})
+
+const fileRelations = computed(() => {
+  const f = selectedFile.value
+  const view = fileView.value
+  if (!f || !view) return []
+  const byId = new Map(view.nodes.map((n) => [n.id, n]))
+  return view.edges
+    .filter((e) => e.from === f.id || e.to === f.id)
+    .map((e) => {
+      const outgoing = e.from === f.id
+      const other = byId.get(outgoing ? e.to : e.from)
+      return { dir: outgoing ? '→' : '←', name: other ? other.name : '?', label: e.label }
+    })
+})
+
+async function enterFileView(moduleId) {
+  if (!moduleId) return
+  fileLoading.value = true
+  fileError.value = ''
+  try {
+    const res = await fetch(`${API}/api/moduleFiles?moduleId=${encodeURIComponent(moduleId)}`, {
+      headers: { Accept: 'application/json' },
+    })
+    const data = await res.json()
+    if (!data.success) {
+      fileError.value = data.message || '无法读取文件关系'
+      return
+    }
+    fileView.value = data
+    selectedFileId.value = ''
+    explainHint.value = ''
+    nextTick(() => fitView())
+  } catch (e) {
+    fileError.value = '读取文件关系失败：' + e.message
+  } finally {
+    fileLoading.value = false
+  }
+}
+
+function exitFileView() {
+  fileView.value = null
+  selectedFileId.value = ''
+  explainHint.value = ''
+  nextTick(() => fitView())
+}
+
+function onNodeClick(id) {
+  if (fileView.value) {
+    selectedFileId.value = id
+    explainHint.value = ''
+  } else {
+    selectedId.value = id
+  }
+}
+
+function onNodeDblClick(id) {
+  if (fileView.value) {
+    const f = fileView.value.nodes.find((n) => n.id === id)
+    if (f) openInIde(fileView.value.moduleId, f.name)
+    return
+  }
+  openInIde(id)
+}
+
+/** 逐行解释：本轮只做入口，真正解析下一步接 */
+function explainFile() {
+  explainHint.value = '逐行解释需要把源码逐行发给模型，下一步实现（含错误修正建议）。'
+}
+
 /** 画布上要画的边：引用关系 + 父子包含关系 */
 const displayEdges = computed(() => {
   const visible = new Set(focusNodes.value.map((n) => n.id))
@@ -626,7 +819,7 @@ const displayEdges = computed(() => {
 })
 
 const placed = computed(() => {
-  const nodes = focusNodes.value
+  const nodes = canvasNodes.value
   if (!nodes.length) return []
 
   const layer = layerOf(nodes, relations.value)
@@ -845,7 +1038,7 @@ function routeEdge(a, b, slot = 0) {
 const routed = computed(() => {
   const out = []
   const slots = new Map()
-  const edges = displayEdges.value
+  const edges = canvasEdges.value
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i]
     const a = boxById.value.get(e.from)
@@ -1051,8 +1244,16 @@ async function fetchData() {
     projectName.value = data.projectName || ''
     notice.value = data.notice || ''
 
-    // 深链：?focus=mod:xxx
-    const wantFocus = new URLSearchParams(location.search).get('focus')
+    // 深链：?focus=mod:xxx&files=mod:xxx
+    const params = new URLSearchParams(location.search)
+    const wantFiles = params.get('files')
+    if (wantFiles) {
+      selectedId.value = wantFiles
+      enterFileView(wantFiles)
+      return
+    }
+
+    const wantFocus = params.get('focus')
     if (wantFocus && modules.value.some((n) => n.id === wantFocus)) {
       selectedId.value = wantFocus
     } else if (!modules.value.some((n) => n.id === selectedId.value)) {
@@ -1060,7 +1261,7 @@ async function fetchData() {
     }
   } catch (e) {
     if (e.name === 'AbortError') return
-    error.value = '连不上插件服务（127.0.0.1:8899）。请确认插件已启动、右侧工具窗已打开。'
+    error.value = '连不上插件服务（' + API + '）。请确认插件已启动、右侧工具窗已打开。'
     modules.value = []
     relations.value = []
     console.error(e)
@@ -1080,6 +1281,7 @@ watch(autoRefresh, (on) => {
 function onGlobalKey(event) {
   if (event.key === 'Escape') {
     if (menu.value.open) closeMenu()
+    else if (fileView.value) exitFileView()
     else selectedId.value = ''
   }
   if ((event.ctrlKey || event.metaKey) && event.key === '0') {
@@ -2049,6 +2251,103 @@ onBeforeUnmount(() => {
   max-height: 100px;
   overflow-y: auto;
 }
+/* ---------------- 三级：面包屑 ---------------- */
+.crumb-bar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(12, 20, 26, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  font-size: 11.5px;
+  z-index: 5;
+  max-width: 60%;
+  overflow: hidden;
+}
+
+.crumb {
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #7fb3ad;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.crumb:hover {
+  color: #7ff0dd;
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  color: #3f5b5e;
+}
+
+.crumb-current {
+  color: #cfe9e5;
+  font-family: Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------- 操作按钮 ---------------- */
+.dp-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.act-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(53, 224, 200, 0.4);
+  background: rgba(53, 224, 200, 0.12);
+  color: #7ff0dd;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.act-btn:hover {
+  background: rgba(53, 224, 200, 0.2);
+  border-color: rgba(53, 224, 200, 0.7);
+}
+
+.act-btn.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #9db3b5;
+}
+
+.act-btn.ghost:hover {
+  border-color: rgba(53, 224, 200, 0.45);
+  color: #7ff0dd;
+}
+
+.dp-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #5d7a7e;
+}
+
+.dp-hint.error {
+  color: #ff9e94;
+}
+
+.file-badge {
+  color: #7ff0dd;
+}
+
 /* ---------------- 右键菜单 ---------------- */
 .ctx-menu {
   position: fixed;
