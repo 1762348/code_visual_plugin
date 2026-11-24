@@ -61,7 +61,7 @@
     </div>
 
     <div v-else class="stage" :class="{ focused: !!selected }">
-      <div ref="wrapEl" class="canvas-wrap" :class="{ files: !!fileView }">
+      <div ref="wrapEl" class="canvas-wrap" :class="{ files: !!fileView, 'zoom-only': !fileView && !selectedId }">
       <svg
         ref="svgEl"
         class="canvas"
@@ -244,7 +244,7 @@
         </template>
       </div>
 
-      <p v-if="fileView && !selectedFile" class="stage-hint">点击文件卡片查看详情 · 滚轮横向滑动</p>
+      <p v-if="fileView && !selectedFile" class="stage-hint">滚轮横向滑动</p>
       <p v-else-if="!selected" class="stage-hint">点击模块进入聚焦 · 滚轮缩放 · 空白处拖拽平移</p>
       </div>
 
@@ -340,6 +340,22 @@
           </div>
         </template>
       </section>
+      <!-- 三级：未选文件时的模块概要（内容高度，不占满） -->
+      <section v-if="fileView && !selectedFile" class="detail-panel compact">
+        <div class="dp-main">
+          <div class="dp-head">
+            <span class="badge file-badge">模块</span>
+            <span class="dp-title">{{ fileView.moduleName }}</span>
+            <button class="dp-close" title="返回全图（Esc）" @click="exitFileView">×</button>
+          </div>
+          <p class="dp-desc">
+            共 {{ fileView.stats.files }} 个有引用的文件、{{ fileView.stats.edges }} 条引用
+            <template v-if="fileView.stats.hidden">（另有 {{ fileView.stats.hidden }} 个无引用文件未显示）</template>
+          </p>
+          <p class="dp-hint">点击上方文件卡片查看详情</p>
+        </div>
+      </section>
+
       <section v-else-if="selected && !fileView" class="detail-panel">
         <div class="dp-main">
           <div class="dp-head">
@@ -1246,6 +1262,8 @@ function zoomBy(factor) {
 function onCanvasDown(evt) {
   if (fileView.value) return
   if (evt.button !== 0) return
+  // 一级页面只允许缩放，不允许拖动（内容已经自适应居中，拖动只会让画面跑偏）
+  if (!selectedId.value) return
   // 在模块卡片上按下不拖动画布（那是点击/双击语义）
   if (evt.target.closest && evt.target.closest('.module')) return
 
@@ -2005,8 +2023,14 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
+/* 三级是固定宽度横排：必须 flex: none，
+   否则 flex-basis:0 会覆盖 width，整排被压进容器再等比缩小 */
 .canvas-wrap.files .canvas {
   flex: none;
+  cursor: default;
+}
+
+.canvas-wrap.zoom-only .canvas {
   cursor: default;
 }
 
@@ -2079,6 +2103,13 @@ onBeforeUnmount(() => {
   font-family: Consolas, monospace;
 }
 
+
+/* 三级未选文件时的概要只占内容高度，把空间让给画布
+   （要压过 .stage.focused .detail-panel 的 flex:2，必须带上同样的前缀） */
+.stage.focused .detail-panel.compact {
+  flex: 0 0 auto;
+  max-height: 42%;
+}
 
 /* ---------------- 行级修改 ---------------- */
 
