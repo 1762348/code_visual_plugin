@@ -66,7 +66,7 @@
         ref="svgEl"
         class="canvas"
         :viewBox="fileView ? fileViewBox : viewBox"
-        :style="fileView ? { width: fileRowWidth + 'px', height: '100%' } : null"
+        :style="fileView ? { width: fileRowWidth + 'px', height: (CARD_H + 48) + 'px' } : null"
         xmlns="http://www.w3.org/2000/svg"
         :class="{ panning }"
         @contextmenu.prevent="openMenu($event, null)"
@@ -87,7 +87,7 @@
           </marker>
         </defs>
 
-        <g :transform="`translate(${view.x}, ${view.y}) scale(${view.k})`">
+        <g :transform="fileView ? undefined : `translate(${view.x}, ${view.y}) scale(${view.k})`">
 
         <g v-for="r in routed" :key="r.key">
           <path
@@ -244,7 +244,8 @@
         </template>
       </div>
 
-      <p v-if="!selected" class="stage-hint">点击模块进入聚焦 · 滚轮缩放 · 空白处拖拽平移</p>
+      <p v-if="fileView && !selectedFile" class="stage-hint">点击文件卡片查看详情 · 滚轮横向滑动</p>
+      <p v-else-if="!selected" class="stage-hint">点击模块进入聚焦 · 滚轮缩放 · 空白处拖拽平移</p>
       </div>
 
       <!-- 下半部分：当前模块介绍（宽度不够时自动换行成单列） -->
@@ -339,22 +340,7 @@
           </div>
         </template>
       </section>
-      <!-- 文件图里没选文件时：提示 -->
-      <section v-else-if="fileView" class="detail-panel">
-        <div class="dp-main">
-          <div class="dp-head">
-            <span class="badge file-badge">模块</span>
-            <span class="dp-title">{{ fileView.moduleName }}</span>
-            <button class="dp-close" title="返回全图（Esc）" @click="exitFileView">×</button>
-          </div>
-          <p class="dp-desc">
-            共 {{ fileView.stats.files }} 个有引用的文件、{{ fileView.stats.edges }} 条引用
-            <template v-if="fileView.stats.hidden">（另有 {{ fileView.stats.hidden }} 个无引用文件未显示）</template>
-          </p>
-          <p class="dp-hint">点击上方文件卡片查看详情</p>
-        </div>
-      </section>
-      <section v-else-if="selected" class="detail-panel">
+      <section v-else-if="selected && !fileView" class="detail-panel">
         <div class="dp-main">
           <div class="dp-head">
             <span class="badge" :style="{ color: roleColor(selected.role) }">{{ selected.role }}</span>
@@ -2016,6 +2002,7 @@ onBeforeUnmount(() => {
 .canvas-wrap.files {
   overflow-x: auto;
   overflow-y: hidden;
+  align-items: center;
 }
 
 .canvas-wrap.files .canvas {

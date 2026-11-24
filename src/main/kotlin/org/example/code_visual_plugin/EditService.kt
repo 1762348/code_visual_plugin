@@ -51,7 +51,9 @@ object EditService {
             ?: return EditResult(success = false, message = "找不到文件：$fileName（可能已移动，请刷新）")
 
         val manager = FileDocumentManager.getInstance()
-        val document = manager.getDocument(file)
+        // getDocument 必须在读锁里调用，否则会抛
+        // "Read access is allowed from inside read-action only"
+        val document = documentOf(file)
             ?: return EditResult(success = false, message = "拿不到文档，可能是二进制文件")
 
         var failure: String? = null
@@ -103,7 +105,7 @@ object EditService {
             ?: return EditResult(success = false, message = "找不到文件：$fileName")
 
         val manager = FileDocumentManager.getInstance()
-        val document = manager.getDocument(file)
+        val document = documentOf(file)
             ?: return EditResult(success = false, message = "拿不到文档")
 
         val snapshot = synchronized(history) {
@@ -133,6 +135,11 @@ object EditService {
     }
 
     // ------------------------------------------------------------ 内部
+
+    private fun documentOf(file: VirtualFile): Document? =
+        ReadAction.compute<Document?, RuntimeException> {
+            FileDocumentManager.getInstance().getDocument(file)
+        }
 
     private fun findFile(moduleId: String, fileName: String): VirtualFile? =
         ReadAction.compute<VirtualFile?, RuntimeException> {
