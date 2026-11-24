@@ -254,6 +254,18 @@
           <div class="dp-head">
             <span class="badge file-badge">逐行</span>
             <span class="dp-title">{{ explainResult.file }}</span>
+            <button
+              class="act-btn small"
+              :disabled="editBusy"
+              title="把所有可修改的行一次性写入"
+              @click="applyAllLines"
+            >全部修改</button>
+            <button
+              class="act-btn ghost small"
+              :disabled="editBusy || !editVersions"
+              :title="editVersions ? `回滚到上一版（还剩 ${editVersions} 版）` : '没有可回滚的版本'"
+              @click="rollbackEdits"
+            >回滚{{ editVersions ? ` (${editVersions})` : '' }}</button>
             <button class="act-btn ghost small" @click="closeExplain">返回文件</button>
             <button class="dp-close" title="返回全图（Esc）" @click="exitFileView">×</button>
           </div>
@@ -261,12 +273,23 @@
             {{ explainResult.lines.length }} 行有说明 · 文件共 {{ explainResult.totalLines }} 行
             <span v-if="explainResult.truncated"> · 仅解释了前 220 行</span>
           </p>
+          <p v-if="editMessage" class="dp-hint" :class="{ error: editMessage.includes('失败') || editMessage.includes('没有') }">{{ editMessage }}</p>
           <ul class="line-list">
-            <li v-for="l in explainResult.lines" :key="l.line" :class="{ bad: !!l.issue }">
+            <li v-for="l in explainResult.lines" :key="l.line" :class="{ bad: !!l.issue, fixed: l.applied }">
               <span class="ln">{{ l.line }}</span>
               <span class="lc">{{ l.code }}</span>
               <span class="ly">{{ l.note }}</span>
-              <span v-if="l.issue" class="li">⚠ {{ l.issue }}</span>
+              <span class="la">
+                <span v-if="l.applied" class="fixed-tag">✓ 已修改</span>
+                <button
+                  v-else-if="l.fix"
+                  class="fix-btn"
+                  :disabled="editBusy"
+                  title="只修改这一行"
+                  @click="applyOneLine(l)"
+                >修改</button>
+              </span>
+              <span v-if="l.issue && !l.applied" class="li">⚠ {{ l.issue }}</span>
             </li>
           </ul>
         </div>
@@ -891,6 +914,111 @@ async function explainFile() {
       explainError.value = '轮询失败：' + e.message
     }
   }, 1200)
+}
+
+/* ---------------- 行级修改 / 回滚 ---------------- */
+
+const editBusy = ref(false)
+const editMessage = ref('')
+const editVersions = ref(0)
+
+/** 每次成功修改前的行快照，供前端回滚时还原文案 */
+let rowSnapshots = []
+
+function snapshotRows() {
+  if (!explainResult.value) return
+  rowSnapshots.push(explainResult.value.lines.map((l) => ({ ...l })))
+  while (rowSnapshots.length > 3) rowSnapshots.shift()
+}
+
+async function postFixes(edits) {
+  if (!fileView.value || !selectedFile.value || !edits.length) return
+
+  editBusy.value = true
+  editMessage.value = '正在写入...'
+  try {
+    const res = await fetch(`${API}/api/applyFixes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        moduleId: fileView.value.moduleId,
+        file: selectedFile.value.name,
+        edits,
+      }),
+    })
+    const data = await res.json()
+    if (!data.success) {
+      editMessage.value = data.message || '修改失败'
+      return
+    }
+
+    snapshotRows()
+    editVersions.value = data.versions || 0
+    editMessage.value = data.message || '已修改'
+
+    // 更新对应行的文案：代码换成新内容，标记已修改
+    const byLine = new Map(edits.map((e) => [e.line, e.text]))
+    for (const row of explainResult.value.lines) {
+      const text = byLine.get(row.line)
+      if (text === undefined) continue
+      row.code = text.split('\n')[0]
+      row.applied = true
+      row.issue = ''
+      row.note = '已修改'
+      row.fix = ''
+    }
+  } catch (e) {
+    editMessage.value = '写入失败：' + e.message
+  } finally {
+    editBusy.value = false
+  }
+}
+
+function applyOneLine(row) {
+  if (!row.fix || editBusy.value) return
+  postFixes([{ line: row.line, text: row.fix }])
+}
+
+function applyAllLines() {
+  if (!explainResult.value || editBusy.value) return
+  const pending = explainResult.value.lines.filter((l) => l.fix && !l.applied)
+  if (!pending.length) {
+    editMessage.value = '没有可修改的行'
+    return
+  }
+  postFixes(pending.map((l) => ({ line: l.line, text: l.fix })))
+}
+
+async function rollbackEdits() {
+  if (!fileView.value || !selectedFile.value || editBusy.value) return
+  if (!editVersions.value) {
+    editMessage.value = '没有可回滚的版本'
+    return
+  }
+
+  editBusy.value = true
+  editMessage.value = '正在回滚...'
+  try {
+    const url =
+      `${API}/api/rollback?moduleId=${encodeURIComponent(fileView.value.moduleId)}` +
+      `&file=${encodeURIComponent(selectedFile.value.name)}`
+    const res = await fetch(url, { method: 'POST' })
+    const data = await res.json()
+    if (!data.success) {
+      editMessage.value = data.message || '回滚失败'
+      return
+    }
+
+    editVersions.value = data.versions || 0
+    editMessage.value = data.message || '已回滚'
+
+    const prev = rowSnapshots.pop()
+    if (prev) explainResult.value.lines = prev
+  } catch (e) {
+    editMessage.value = '回滚失败：' + e.message
+  } finally {
+    editBusy.value = false
+  }
 }
 
 function closeExplain() {
@@ -1962,6 +2090,30 @@ onBeforeUnmount(() => {
   font-family: Consolas, monospace;
 }
 
+
+/* ---------------- 行级修改 ---------------- */
+
+.line-list .la { text-align: right; }
+
+.fix-btn {
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(53, 224, 200, 0.45);
+  background: rgba(53, 224, 200, 0.12);
+  color: #7ff0dd;
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fix-btn:hover:not(:disabled) { background: rgba(53, 224, 200, 0.25); }
+.fix-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.fixed-tag { color: #4fbfb0; font-size: 10.5px; white-space: nowrap; }
+.line-list li.fixed { background: rgba(53, 224, 200, 0.06); }
+.line-list li.fixed .lc { color: #7ff0dd; }
+
 /* ---------------- 滚动条（JCEF 默认宽度为 0，必须显式指定） ---------------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.03); border-radius: 6px; }
@@ -2592,7 +2744,7 @@ onBeforeUnmount(() => {
 
 .line-list li {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1.3fr) minmax(0, 0.95fr);
+  grid-template-columns: 44px minmax(0, 1.25fr) minmax(0, 0.9fr) 62px;
   gap: 10px;
   align-items: baseline;
   padding: 3px 0;

@@ -61,7 +61,7 @@ object PluginHttpServer {
             ) {
                 baseRequest.isHandled = true
                 // Jetty 的 target 不含 query，必须从 servlet request 上取
-                route(target, request.queryString, response)
+                route(target, request.queryString, request, response)
             }
         }
 
@@ -87,7 +87,7 @@ object PluginHttpServer {
 
     // ---------------------------------------------------------------- 路由
 
-    private fun route(target: String, query: String?, response: HttpServletResponse) {
+    private fun route(target: String, query: String?, request: HttpServletRequest, response: HttpServletResponse) {
         val path = target.substringBefore('?')
 
         // 非 /api 的请求当作静态资源，直接从插件 jar 里的 web/ 目录读
@@ -134,6 +134,30 @@ object PluginHttpServer {
                     }
                     write(response, gson.toJson(mapOf("ok" to (p != null))))
                 }
+                path == "/api/applyFixes" -> {
+                    val body = try {
+                        request.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                    } catch (e: Throwable) {
+                        ""
+                    }
+                    write(response, gson.toJson(applyFixes(body)))
+                }
+                path == "/api/rollback" -> write(
+                    response,
+                    gson.toJson(rollback(queryParam(query, "moduleId"), queryParam(query, "file")))
+                )
+                path == "/api/versions" -> write(
+                    response,
+                    gson.toJson(
+                        EditResult(
+                            success = true,
+                            versions = EditService.versionCount(
+                                queryParam(query, "moduleId").orEmpty(),
+                                queryParam(query, "file").orEmpty()
+                            )
+                        )
+                    )
+                )
                 path == "/api/explain" -> {
                     val proj = project
                     if (proj != null) {
@@ -242,6 +266,35 @@ object PluginHttpServer {
             "path" to target.path,
             "selected" to opened
         )
+    }
+
+    private data class FixItem(val line: Int = 0, val text: String = "")
+    private data class ApplyFixesRequest(
+        val moduleId: String = "",
+        val file: String = "",
+        val edits: List<FixItem> = emptyList()
+    )
+
+    private fun applyFixes(body: String): EditResult {
+        val proj = project ?: return EditResult(success = false, message = "没有打开的项目")
+        val payload = try {
+            gson.fromJson(body, ApplyFixesRequest::class.java)
+        } catch (e: Throwable) {
+            return EditResult(success = false, message = "请求格式不对：" + (e.message ?: ""))
+        }
+        if (payload == null || payload.moduleId.isBlank() || payload.file.isBlank()) {
+            return EditResult(success = false, message = "缺少 moduleId / file")
+        }
+        val edits = payload.edits.map { it.line to it.text }
+        return EditService.apply(proj, payload.moduleId, payload.file, edits)
+    }
+
+    private fun rollback(moduleId: String?, file: String?): EditResult {
+        val proj = project ?: return EditResult(success = false, message = "没有打开的项目")
+        if (moduleId.isNullOrBlank() || file.isNullOrBlank()) {
+            return EditResult(success = false, message = "缺少 moduleId / file")
+        }
+        return EditService.rollback(proj, moduleId, file)
     }
 
     private fun buildFileGraph(moduleId: String?): FileGraph {

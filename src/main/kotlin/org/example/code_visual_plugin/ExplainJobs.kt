@@ -15,7 +15,9 @@ data class LineNote(
     val line: Int = 0,
     val code: String = "",
     val note: String = "",
-    val issue: String = ""
+    val issue: String = "",
+    /** 改好之后的整行文本（可含换行）；为空表示这行不需要/无法自动修改 */
+    val fix: String = ""
 )
 
 data class ExplainResult(
@@ -120,7 +122,8 @@ object ExplainJobs {
                         line = item.n,
                         code = code.trimEnd(),
                         note = item.note,
-                        issue = item.issue
+                        issue = item.issue,
+                        fix = item.fix
                     )
                 }.sortedBy { it.line }
 
@@ -156,7 +159,7 @@ object ExplainJobs {
             if (text.isBlank()) null else Source(text)
         }
 
-    private data class AiLine(val n: Int = 0, val note: String = "", val issue: String = "")
+    private data class AiLine(val n: Int = 0, val note: String = "", val issue: String = "", val fix: String = "")
     private data class AiPayload(val lines: List<AiLine> = emptyList())
 
     private fun buildPayload(fileName: String, numbered: List<Pair<Int, String>>): Pair<String, String> {
@@ -167,10 +170,14 @@ object ExplainJobs {
               1. note：这一行在做什么，中文，不超过 30 字；
               2. issue：如果这一行有明显问题（语法错误、空指针风险、资源未关闭、边界缺失等），
                  给出一句具体的修正建议（不超过 30 字）；没有问题就留空字符串。
+              3. fix：这一行**改好之后的完整文本**，会被直接写回文件。
+                 - 只包含这一行的内容；需要补多行时才用 \n（例如补右括号）
+                 - 不带行号、不带解释，保持原有缩进，必须是合法代码
+                 - 该行不需要修改就留空字符串
 
             跳过：空行、单独的括号、import/package 声明。
             只输出 JSON，不要 markdown 代码块，不要解释文字：
-            {"lines":[{"n":12,"note":"说明","issue":""}]}
+            {"lines":[{"n":12,"note":"说明","issue":"","fix":""}]}
         """.trimIndent()
 
         val sb = StringBuilder()
