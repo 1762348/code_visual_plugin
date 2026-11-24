@@ -103,7 +103,17 @@ object PluginHttpServer {
 
         response.contentType = "application/json;charset=UTF-8"
         response.setHeader("Access-Control-Allow-Origin", "*")
+        response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        response.setHeader("Access-Control-Allow-Headers", "Content-Type")
         response.setHeader("Cache-Control", "no-store")
+
+        // 开发时页面来自 vite（localhost:5173），跨域 POST 会先发预检。
+        // 之前只回了 Allow-Origin、没回 Allow-Headers，带 Content-Type 的
+        // 请求会被浏览器拦下，前端只看到 "Failed to fetch"。
+        if (request.method.equals("OPTIONS", ignoreCase = true)) {
+            response.status = HttpServletResponse.SC_NO_CONTENT
+            return
+        }
 
         try {
             when {

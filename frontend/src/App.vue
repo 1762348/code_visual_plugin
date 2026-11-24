@@ -939,7 +939,9 @@ async function postFixes(edits) {
   try {
     const res = await fetch(`${API}/api/applyFixes`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // 用 text/plain 而不是 application/json：后者会触发 CORS 预检，
+      // 服务端没处理时浏览器直接拦掉，前端只会看到 Failed to fetch
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify({
         moduleId: fileView.value.moduleId,
         file: selectedFile.value.name,
