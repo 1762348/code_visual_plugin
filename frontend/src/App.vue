@@ -22,7 +22,7 @@
           {{ aiStatus.phase === 'running' ? '分析中...' : 'AI 生成语义' }}
         </button>
         <button class="cfg-btn" title="打开 CodeCanvas AI 设置" @click="openSettings">⚙</button>
-        <button class="refresh-btn" :disabled="loading" @click="fetchData">
+        <button class="refresh-btn" :disabled="loading" @click="fetchData(true)">
           {{ loading ? '扫描中...' : '刷新' }}
         </button>
       </div>
@@ -1359,6 +1359,42 @@ function fitView() {
 }
 
 /** 100%：按真实像素 1:1 显示 */
+/** 自动刷新：只有源码变化（版本号变了）才重新拉图 */
+let lastVersion = -1
+/** 服务端没有版本接口时（旧 jar）退回整图轮询 */
+let versionApiOk = true
+
+async function checkVersion() {
+  if (document.hidden) return
+
+  if (!versionApiOk) {
+    await fetchData()
+    return
+  }
+
+  try {
+    const res = await fetch(`${API}/api/projectGraphVersion`)
+    if (!res.ok) {
+      versionApiOk = false
+      await fetchData()
+      return
+    }
+    const data = await res.json()
+    const version = Number(data.version)
+    if (Number.isNaN(version)) return
+    if (lastVersion === -1) {
+      lastVersion = version
+      return
+    }
+    if (version !== lastVersion) {
+      lastVersion = version
+      await fetchData()
+    }
+  } catch (e) {
+    // 轮询失败静默忽略，下一轮再试
+  }
+}
+
 function resetView() {
   centerAt(1)
   userAdjusted = true
@@ -1616,7 +1652,7 @@ function isEdgeActive(edge) {
 
 /* ------------------------------ 数据 ------------------------------ */
 
-async function fetchData() {
+async function fetchData(force = false) {
   if (controller) controller.abort()
   controller = new AbortController()
 
@@ -1624,7 +1660,8 @@ async function fetchData() {
   error.value = ''
 
   try {
-    const res = await fetch(`${API}/api/projectGraph`, {
+    const url = `${API}/api/projectGraph` + (force ? `?force=1&t=${Date.now()}` : ``)
+    const res = await fetch(url, {
       signal: controller.signal,
       headers: { Accept: 'application/json' },
     })
@@ -1684,7 +1721,9 @@ watch(autoRefresh, (on) => {
     clearInterval(timer)
     timer = null
   }
-  if (on) timer = setInterval(fetchData, 5000)
+  // 不再每 5 秒重拉整个图（那会触发全量重扫），
+  // 只查一个版本号，变了才重新拉数据
+  if (on) timer = setInterval(checkVersion, 3000)
 })
 
 function onGlobalKey(event) {

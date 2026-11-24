@@ -117,7 +117,15 @@ object PluginHttpServer {
 
         try {
             when {
-                path == "/api/projectGraph" -> write(response, buildProjectGraphJson())
+                path == "/api/projectGraphVersion" -> write(
+                    response,
+                    gson.toJson(mapOf("version" to ModuleScanService.currentVersion()))
+                )
+                path == "/api/projectGraph" -> {
+                    // force=1：手动点「刷新」时强制重扫
+                    if (queryParam(query, "force") == "1") ModuleScanService.invalidate()
+                    write(response, buildProjectGraphJson())
+                }
                 path == "/api/ai/status" -> write(response, gson.toJson(AiJobs.status()))
                 path == "/api/ai/analyze" -> {
                     val p = project

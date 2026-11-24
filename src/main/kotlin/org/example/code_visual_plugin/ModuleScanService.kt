@@ -1,9 +1,13 @@
 package org.example.code_visual_plugin
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiErrorElement
 import com.intellij.psi.PsiManager
@@ -129,8 +133,86 @@ object ModuleScanService {
         Regex("""#include\s+[<"]([^">]+)[">]""")                 // C/C++
     )
 
-    fun build(project: Project): ProjectGraph =
-        ReadAction.compute<ProjectGraph, RuntimeException> { doBuild(project) }
+    // ------------------------------------------------------------ 缓存
+
+    /**
+     * 扫描结果缓存。
+     *
+     * 之前每个 /api/projectGraph 请求都会完整重扫（还要读每个文件算行数），
+     * 前端「自动」每 5 秒轮询一次，等于每 5 秒把项目读一遍。
+     *
+     * 现在：源码文件有增删改时版本号 +1，版本没变就直接返回上次结果。
+     */
+    @Volatile
+    private var cachedGraph: ProjectGraph? = null
+
+    @Volatile
+    private var cachedProjectPath: String? = null
+
+    @Volatile
+    private var cachedVersion: Long = -1
+
+    @Volatile
+    private var scanVersion: Long = 0
+
+    @Volatile
+    private var vfsListenerInstalled = false
+
+    /** 前端轮询这个值判断要不要重新拉图 */
+    fun currentVersion(): Long = scanVersion
+
+    /** 手动强制失效（点「刷新」时用） */
+    fun invalidate() {
+        scanVersion++
+    }
+
+    fun build(project: Project): ProjectGraph {
+        ensureVfsListener()
+
+        val key = project.basePath ?: project.name
+        val version = scanVersion
+        cachedGraph?.let { graph ->
+            if (cachedProjectPath == key && cachedVersion == version) return graph
+        }
+
+        val graph = ReadAction.compute<ProjectGraph, RuntimeException> { doBuild(project) }
+        cachedGraph = graph
+        cachedProjectPath = key
+        cachedVersion = version
+        return graph
+    }
+
+    /**
+     * 只有"会被我们扫描到的文件"变化才让缓存失效。
+     * 否则一次 Gradle 构建产生的几万个 build/ 事件会让缓存永远失效。
+     */
+    private fun ensureVfsListener() {
+        if (vfsListenerInstalled) return
+        synchronized(this) {
+            if (vfsListenerInstalled) return
+            try {
+                ApplicationManager.getApplication().messageBus.connect().subscribe(
+                    VirtualFileManager.VFS_CHANGES,
+                    object : BulkFileListener {
+                        override fun after(events: MutableList<out VFileEvent>) {
+                            if (events.any { isScannedFile(it.path) }) invalidate()
+                        }
+                    }
+                )
+                vfsListenerInstalled = true
+            } catch (e: Throwable) {
+                // 装不上监听不影响功能，最多是缓存不自动失效
+                vfsListenerInstalled = true
+            }
+        }
+    }
+
+    private fun isScannedFile(path: String): Boolean {
+        val normalized = path.replace('\\', '/')
+        val ext = normalized.substringAfterLast('.', "").lowercase()
+        if (ext.isEmpty() || !LANGUAGES.containsKey(ext)) return false
+        return normalized.split('/').none { it in SKIP_DIRS }
+    }
 
     // ------------------------------------------------------------ 保底
 
