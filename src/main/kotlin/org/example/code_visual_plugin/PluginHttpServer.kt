@@ -134,6 +134,18 @@ object PluginHttpServer {
                     }
                     write(response, gson.toJson(mapOf("ok" to (p != null))))
                 }
+                path == "/api/explain" -> {
+                    val proj = project
+                    if (proj != null) {
+                        ExplainJobs.start(proj, queryParam(query, "moduleId"), queryParam(query, "file"))
+                    }
+                    write(response, gson.toJson(ExplainJobs.status()))
+                }
+                path == "/api/explainStatus" -> write(response, gson.toJson(ExplainJobs.status()))
+                path == "/api/explainReset" -> {
+                    ExplainJobs.reset()
+                    write(response, gson.toJson(ExplainJobs.status()))
+                }
                 path == "/api/moduleFiles" -> write(
                     response,
                     gson.toJson(buildFileGraph(queryParam(query, "moduleId")))

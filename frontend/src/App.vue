@@ -61,11 +61,12 @@
     </div>
 
     <div v-else class="stage" :class="{ focused: !!selected }">
-      <div class="canvas-wrap">
+      <div class="canvas-wrap" :class="{ files: !!fileView }">
       <svg
         ref="svgEl"
         class="canvas"
-        :viewBox="viewBox"
+        :viewBox="fileView ? fileViewBox : viewBox"
+        :style="fileView ? { width: fileRowWidth + 'px', height: '100%' } : null"
         xmlns="http://www.w3.org/2000/svg"
         :class="{ panning }"
         @contextmenu.prevent="openMenu($event, null)"
@@ -171,7 +172,14 @@
           </text>
 
           <text
-            v-if="m.node.descState === 'ai'"
+            v-if="m.node.refText"
+            :x="m.x + CARD_W - 16"
+            :y="m.y + CARD_H - 13"
+            class="m-ref"
+            text-anchor="end"
+          >{{ m.node.refText }}</text>
+          <text
+            v-else-if="m.node.descState === 'ai'"
             :x="m.x + CARD_W - 16"
             :y="m.y + CARD_H - 13"
             class="m-ai"
@@ -194,9 +202,12 @@
         <button class="crumb" @click="exitFileView">{{ fileView.moduleName }}</button>
         <span class="crumb-sep">›</span>
         <span class="crumb-current">{{ selectedFile ? selectedFile.name : '选择文件' }}</span>
+        <span class="crumb-meta">
+          {{ fileView.stats.files }} 文件 · {{ fileView.stats.edges }} 引用
+        </span>
       </div>
 
-      <div class="zoom-bar">
+      <div v-if="!fileView" class="zoom-bar">
         <button class="zoom-btn" title="放大" @click="zoomBy(1.2)">＋</button>
         <button class="zoom-btn" title="缩小" @click="zoomBy(1 / 1.2)">－</button>
         <button class="zoom-btn wide" title="适应窗口" @click="fitView">适应</button>
@@ -205,7 +216,7 @@
       </div>
 
       <!-- 左下角：线条示意（始终保留） -->
-      <div class="canvas-legend">
+      <div v-if="!fileView" class="canvas-legend">
         <span><i class="lg lg-extends"></i>继承</span>
         <span><i class="lg lg-implements"></i>实现</span>
         <span><i class="lg lg-uses"></i>依赖</span>
@@ -213,7 +224,7 @@
       </div>
 
       <!-- 右下角：未聚焦时是全局统计，聚焦时是这条链路的处理量与规模 -->
-      <div class="canvas-stats">
+      <div v-if="!fileView" class="canvas-stats">
         <template v-if="fileView">
           <div class="stat-row"><span class="stat-k">文件</span><span class="stat-v">{{ fileView.stats.files }}</span></div>
           <div class="stat-row"><span class="stat-k">引用</span><span class="stat-v">{{ fileView.stats.edges }}</span></div>
@@ -237,43 +248,74 @@
       </div>
 
       <!-- 下半部分：当前模块介绍（宽度不够时自动换行成单列） -->
-      <!-- 三级：文件详情 -->
+      <!-- 三级：文件详情 / 逐行解释 -->
       <section v-if="fileView && selectedFile" class="detail-panel">
-        <div class="dp-main">
+        <div v-if="explainResult" class="explain-wrap">
           <div class="dp-head">
-            <span class="badge file-badge">文件</span>
-            <span class="dp-title">{{ selectedFile.name }}</span>
-            <button class="dp-close" title="返回模块（Esc）" @click="exitFileView">×</button>
+            <span class="badge file-badge">逐行</span>
+            <span class="dp-title">{{ explainResult.file }}</span>
+            <button class="act-btn ghost small" @click="closeExplain">返回文件</button>
+            <button class="dp-close" title="返回全图（Esc）" @click="exitFileView">×</button>
           </div>
-
-          <p class="dp-path">{{ fileView.moduleName }}/{{ selectedFile.name }}</p>
-
-          <div class="dp-meta">
-            <span>{{ selectedFile.lineCount }} 行</span>
-            <span>{{ selectedFile.language }}</span>
-            <span>{{ fileRelations.length }} 条引用</span>
-          </div>
-
-          <div class="dp-actions">
-            <button class="act-btn" @click="explainFile">逐行解释</button>
-            <button class="act-btn ghost" @click="openInIde(fileView.moduleId, selectedFile.name)">在编辑器打开</button>
-          </div>
-
-          <p v-if="explainHint" class="dp-hint">{{ explainHint }}</p>
-        </div>
-
-        <div class="dp-block">
-          <p class="dp-label">引用关系（{{ fileRelations.length }}）</p>
-          <ul class="dp-rel">
-            <li v-for="(r, i) in fileRelations" :key="i">
-              <span class="rel-dir">{{ r.dir }}</span>
-              <span class="rel-name">{{ r.name }}</span>
-              <span class="rel-note">{{ r.label }}</span>
+          <p class="dp-meta">
+            {{ explainResult.lines.length }} 行有说明 · 文件共 {{ explainResult.totalLines }} 行
+            <span v-if="explainResult.truncated"> · 仅解释了前 220 行</span>
+          </p>
+          <ul class="line-list">
+            <li v-for="l in explainResult.lines" :key="l.line" :class="{ bad: !!l.issue }">
+              <span class="ln">{{ l.line }}</span>
+              <span class="lc">{{ l.code }}</span>
+              <span class="ly">{{ l.note }}</span>
+              <span v-if="l.issue" class="li">⚠ {{ l.issue }}</span>
             </li>
           </ul>
         </div>
-      </section>
 
+        <template v-else>
+          <div class="dp-main">
+            <div class="dp-head">
+              <span class="badge file-badge">文件</span>
+              <span class="dp-title">{{ selectedFile.name }}</span>
+              <button class="dp-close" title="返回模块（Esc）" @click="exitFileView">×</button>
+            </div>
+
+            <p class="dp-path">{{ fileView.moduleName }}/{{ selectedFile.name }}</p>
+
+            <p class="dp-desc">{{ selectedFile.purpose || '（这个文件没有头部说明）' }}</p>
+
+            <div class="dp-actions">
+              <button
+                class="act-btn"
+                :disabled="explainPhase === 'running'"
+                @click="explainFile"
+              >{{ explainPhase === 'running' ? '解释中...' : '逐行解释' }}</button>
+              <button class="act-btn ghost" @click="openInIde(fileView.moduleId, selectedFile.name)">
+                在编辑器打开
+              </button>
+            </div>
+
+            <p v-if="explainMessage" class="dp-hint">{{ explainMessage }}</p>
+            <p v-if="explainError" class="dp-hint error">{{ explainError }}</p>
+
+            <div class="dp-meta">
+              <span>{{ selectedFile.lineCount }} 行</span>
+              <span>{{ selectedFile.language }}</span>
+              <span>{{ fileRelations.length }} 条引用</span>
+            </div>
+          </div>
+
+          <div class="dp-block">
+            <p class="dp-label">引用关系（{{ fileRelations.length }}）</p>
+            <ul class="dp-rel">
+              <li v-for="(r, i) in fileRelations" :key="i">
+                <span class="rel-dir">{{ r.dir }}</span>
+                <span class="rel-name">{{ r.name }}</span>
+                <span class="rel-note">{{ r.label }}</span>
+              </li>
+            </ul>
+          </div>
+        </template>
+      </section>
       <!-- 文件图里没选文件时：提示 -->
       <section v-else-if="fileView" class="detail-panel">
         <div class="dp-main">
@@ -701,8 +743,9 @@ const canvasNodes = computed(() => {
     name: f.name,
     shortName: f.name.replace(/\.[^.]+$/, ''),
     role: '文件',
-    desc: `引用 ${outCount.get(f.id) || 0} 处 · 被引用 ${inCount.get(f.id) || 0} 处`,
+    desc: f.purpose || '',
     statText: `${f.lineCount} 行 · ${f.language}`,
+    refText: `引用 ${outCount.get(f.id) || 0} · 被引用 ${inCount.get(f.id) || 0}`,
     descState: 'structural',
     fileCount: 1,
     lineCount: f.lineCount,
@@ -768,6 +811,7 @@ function exitFileView() {
   fileView.value = null
   selectedFileId.value = ''
   explainHint.value = ''
+  closeExplain()
   nextTick(() => fitView())
 }
 
@@ -775,6 +819,7 @@ function onNodeClick(id) {
   if (fileView.value) {
     selectedFileId.value = id
     explainHint.value = ''
+    closeExplain()
   } else {
     selectedId.value = id
   }
@@ -789,9 +834,68 @@ function onNodeDblClick(id) {
   openInIde(id)
 }
 
-/** 逐行解释：本轮只做入口，真正解析下一步接 */
-function explainFile() {
-  explainHint.value = '逐行解释需要把源码逐行发给模型，下一步实现（含错误修正建议）。'
+/* ---------------- 逐行解释 ---------------- */
+
+const explainPhase = ref('idle')   // idle | running | done | error
+const explainResult = ref(null)
+const explainError = ref('')
+const explainMessage = ref('')
+let explainTimer = null
+
+function applyExplain(status) {
+  explainPhase.value = status.phase || 'idle'
+  explainError.value = status.error || ''
+  explainMessage.value = status.message || ''
+  if (status.result) explainResult.value = status.result
+}
+
+async function explainFile() {
+  if (!fileView.value || !selectedFile.value) return
+  if (explainPhase.value === 'running') return
+
+  explainPhase.value = 'running'
+  explainError.value = ''
+  explainMessage.value = '提交中...'
+  explainResult.value = null
+
+  const url =
+    `${API}/api/explain?moduleId=${encodeURIComponent(fileView.value.moduleId)}` +
+    `&file=${encodeURIComponent(selectedFile.value.name)}`
+
+  try {
+    const res = await fetch(url, { method: 'POST' })
+    applyExplain(await res.json())
+  } catch (e) {
+    explainPhase.value = 'error'
+    explainError.value = '提交失败：' + e.message
+    return
+  }
+
+  clearInterval(explainTimer)
+  explainTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${API}/api/explainStatus`)
+      applyExplain(await res.json())
+      if (explainPhase.value !== 'running') {
+        clearInterval(explainTimer)
+        explainTimer = null
+      }
+    } catch (e) {
+      clearInterval(explainTimer)
+      explainTimer = null
+      explainPhase.value = 'error'
+      explainError.value = '轮询失败：' + e.message
+    }
+  }, 1200)
+}
+
+function closeExplain() {
+  clearInterval(explainTimer)
+  explainTimer = null
+  explainResult.value = null
+  explainPhase.value = 'idle'
+  explainError.value = ''
+  explainMessage.value = ''
 }
 
 /** 画布上要画的边：引用关系 + 父子包含关系 */
@@ -818,9 +922,29 @@ const displayEdges = computed(() => {
   return out
 })
 
+/** 三级：文件横排的总宽度（含左右留白） */
+const fileRowWidth = computed(() => {
+  const n = canvasNodes.value.length
+  if (!n) return 320
+  return n * CARD_W + Math.max(0, n - 1) * GAP_X + 48
+})
+
+/** 三级用固定尺寸，不缩放；容器横向滚动 */
+const fileViewBox = computed(() => `0 0 ${fileRowWidth.value} ${CARD_H + 48}`)
+
 const placed = computed(() => {
   const nodes = canvasNodes.value
   if (!nodes.length) return []
+
+  // 三级：一行排开，固定尺寸
+  if (fileView.value) {
+    return nodes.map((node, i) => ({
+      node,
+      x: 24 + i * (CARD_W + GAP_X),
+      y: 24,
+      lines: wrapText(node.desc, 23).slice(0, MAX_DESC_LINES),
+    }))
+  }
 
   const layer = layerOf(nodes, relations.value)
   const byLayer = new Map()
@@ -887,6 +1011,7 @@ function applyZoom(cx, cy, nextK) {
 }
 
 function onWheel(evt) {
+  if (fileView.value) return
   userAdjusted = true
   const p = toViewBox(evt)
   const factor = evt.deltaY < 0 ? 1.12 : 1 / 1.12
@@ -905,6 +1030,7 @@ function zoomBy(factor) {
 
 
 function onCanvasDown(evt) {
+  if (fileView.value) return
   if (evt.button !== 0) return
   // 在模块卡片上按下不拖动画布（那是点击/双击语义）
   if (evt.target.closest && evt.target.closest('.module')) return
@@ -1146,6 +1272,7 @@ let toastTimer = null
 function showToast(text) {
   toast.value = text
   if (toastTimer) clearTimeout(toastTimer)
+  if (explainTimer) clearInterval(explainTimer)
   toastTimer = setTimeout(() => {
     toast.value = ''
   }, 2400)
@@ -1249,7 +1376,15 @@ async function fetchData() {
     const wantFiles = params.get('files')
     if (wantFiles) {
       selectedId.value = wantFiles
-      enterFileView(wantFiles)
+      await enterFileView(wantFiles)
+      // ?explain=1 直接展开第一个文件的逐行解释（便于联调/截图）
+      if (params.get('explain')) {
+        const first = fileView.value && fileView.value.nodes[0]
+        if (first) {
+          selectedFileId.value = first.id
+          explainFile()
+        }
+      }
       return
     }
 
@@ -1350,6 +1485,7 @@ onBeforeUnmount(() => {
   if (aiTimer) clearInterval(aiTimer)
   if (controller) controller.abort()
   if (toastTimer) clearTimeout(toastTimer)
+  if (explainTimer) clearInterval(explainTimer)
   if (resizeObserver) resizeObserver.disconnect()
   onPanUp()
   window.removeEventListener('click', closeMenu)
@@ -1596,6 +1732,27 @@ onBeforeUnmount(() => {
   display: flex;
 }
 
+/* 聚焦时上下按 1:2 分配：画布 1 份，详情 2 份 */
+.stage.focused .canvas-wrap {
+  flex: 1 1 0;
+}
+
+.stage.focused .detail-panel {
+  flex: 2 1 0;
+  max-height: none;
+}
+
+/* 三级：固定尺寸横排，靠横向滚动 */
+.canvas-wrap.files {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.canvas-wrap.files .canvas {
+  flex: none;
+  cursor: default;
+}
+
 .canvas {
   flex: 1;
   min-width: 0;
@@ -1758,6 +1915,13 @@ onBeforeUnmount(() => {
 .m-stat {
   fill: #6d8b8f;
   font-size: 10px;
+  font-family: Consolas, monospace;
+  pointer-events: none;
+}
+
+.m-ref {
+  fill: #4f6b6e;
+  font-size: 9.5px;
   font-family: Consolas, monospace;
   pointer-events: none;
 }
@@ -2051,7 +2215,7 @@ onBeforeUnmount(() => {
 .detail-panel {
   flex-shrink: 0;
   max-height: 46%;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -2251,6 +2415,77 @@ onBeforeUnmount(() => {
   max-height: 100px;
   overflow-y: auto;
 }
+/* ---------------- 逐行解释 ---------------- */
+.explain-wrap {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.line-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.line-list li {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1.3fr) minmax(0, 0.95fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.035);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.line-list .ln {
+  color: #4d6669;
+  font-family: Consolas, monospace;
+  text-align: right;
+}
+
+.line-list .lc {
+  color: #a9c2c2;
+  font-family: Consolas, monospace;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.line-list .ly {
+  color: #8fe3d2;
+  word-break: break-word;
+}
+
+.line-list .li {
+  grid-column: 2 / -1;
+  color: #ff9e94;
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.line-list li.bad .lc {
+  color: #ffb4ac;
+}
+
+.act-btn.small {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.act-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ---------------- 三级：面包屑 ---------------- */
 .crumb-bar {
   position: absolute;
@@ -2287,6 +2522,15 @@ onBeforeUnmount(() => {
 
 .crumb-sep {
   color: #3f5b5e;
+}
+
+.crumb-meta {
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  color: #4d6669;
+  font-family: Consolas, monospace;
+  white-space: nowrap;
 }
 
 .crumb-current {
