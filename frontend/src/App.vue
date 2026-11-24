@@ -156,7 +156,7 @@
             :x="m.x + 20"
             :y="m.y + 52"
             class="m-pkg"
-          >{{ tailPath(m.node.name, 30) }}</text>
+          >{{ tailPath(m.node.name, 24) }}</text>
 
           <text
             v-for="(line, i) in m.lines"
@@ -442,6 +442,10 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import * as dagreNs from '@dagrejs/dagre'
+
+// dagre 3.x 同时提供默认导出与具名导出，两种都兜住
+const dagre = dagreNs.default || dagreNs
 
 // 允许用 ?api= 覆盖，便于用 mock 联调前端
 const API = new URLSearchParams(location.search).get('api') || 'http://127.0.0.1:8899'
@@ -903,13 +907,28 @@ const displayEdges = computed(() => {
   const visible = new Set(focusNodes.value.map((n) => n.id))
   const out = []
 
+  // 同一对模块之间双向引用时只画一条，否则 dagre 会把第二条绕到画布外
+  const drawnPairs = new Set()
   for (const e of relations.value) {
-    if (visible.has(e.from) && visible.has(e.to)) out.push(e)
+    if (!visible.has(e.from) || !visible.has(e.to)) continue
+    if (e.from === e.to) continue
+    const pairKey = [e.from, e.to].sort().join('|')
+    if (drawnPairs.has(pairKey)) continue
+    drawnPairs.add(pairKey)
+    out.push(e)
+  }
+
+  // 已经有引用关系的父子不再画「包含」，否则同一对节点两条边，
+  // dagre 会把它们绕到画布外，看起来就是一堆飞出去的虚线
+  const related = new Set()
+  for (const e of relations.value) {
+    related.add(e.from + '|' + e.to)
+    related.add(e.to + '|' + e.from)
   }
 
   for (const n of focusNodes.value) {
     const parent = moduleByName.value.get(parentName(n.name))
-    if (parent && visible.has(parent.id)) {
+    if (parent && visible.has(parent.id) && !related.has(parent.id + '|' + n.id)) {
       out.push({
         from: parent.id,
         to: n.id,
@@ -932,8 +951,63 @@ const fileRowWidth = computed(() => {
 /** 三级用固定尺寸，不缩放；容器横向滚动 */
 const fileViewBox = computed(() => `0 0 ${fileRowWidth.value} ${CARD_H + 48}`)
 
-/** 组件之间横向排列的间距 */
-const COMPONENT_GAP = 72
+/* ---------------- 布局：交给 dagre ----------------
+   之前手写的"先分组再换行"在模块多时会撑成又高又窄，
+   自适应后文字直接不可读。dagre 是分层有向图的成熟实现
+   （React Flow / Svelte Flow 的官方文档都推荐它），
+   顺带给出连线路由点，比我自己拉的贝塞尔干净得多。
+--------------------------------------------------- */
+
+const dagreLayout = computed(() => {
+  const nodes = canvasNodes.value
+  const edges = canvasEdges.value
+  if (!nodes.length || fileView.value) return null
+
+  const g = new dagre.graphlib.Graph({ multigraph: true })
+  g.setGraph({
+    rankdir: 'LR',
+    nodesep: 34,
+    ranksep: 110,
+    marginx: 24,
+    marginy: 24,
+  })
+  g.setDefaultEdgeLabel(() => ({}))
+
+  for (const n of nodes) g.setNode(n.id, { width: CARD_W, height: CARD_H })
+
+  // 只把两端都可见的边交给 dagre
+  const keyOf = new Map()
+  let seq = 0
+  for (const e of edges) {
+    if (e.from === e.to) continue
+    if (!g.hasNode(e.from) || !g.hasNode(e.to)) continue
+    const key = 'e' + seq++
+    keyOf.set(key, e)
+    g.setEdge(e.from, e.to, {}, key)
+  }
+
+  try {
+    dagre.layout(g)
+  } catch (e) {
+    console.error('dagre layout failed', e)
+    return null
+  }
+
+  const pos = new Map()
+  for (const n of nodes) {
+    const item = g.node(n.id)
+    if (!item) continue
+    pos.set(n.id, { x: item.x - CARD_W / 2, y: item.y - CARD_H / 2 })
+  }
+
+  const paths = new Map()
+  for (const [key, e] of keyOf) {
+    const edge = g.edge({ v: e.from, w: e.to, name: key })
+    if (edge && edge.points && edge.points.length >= 2) paths.set(key, edge.points)
+  }
+
+  return { pos, paths, keyOf }
+})
 
 const placed = computed(() => {
   const nodes = canvasNodes.value
@@ -949,98 +1023,53 @@ const placed = computed(() => {
     }))
   }
 
-  const edges = canvasEdges.value
-  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const layout = dagreLayout.value
+  if (!layout) return []
 
-  // --- 1. 按边求连通分量（没有边的节点各自成组）---
-  const adj = new Map(nodes.map((n) => [n.id, new Set()]))
-  for (const e of edges) {
-    if (!byId.has(e.from) || !byId.has(e.to)) continue
-    adj.get(e.from).add(e.to)
-    adj.get(e.to).add(e.from)
-  }
-
-  const seen = new Set()
-  const components = []
-  for (const n of nodes) {
-    if (seen.has(n.id)) continue
-    const stack = [n.id]
-    const comp = []
-    seen.add(n.id)
-    while (stack.length) {
-      const id = stack.pop()
-      comp.push(byId.get(id))
-      for (const nb of adj.get(id)) {
-        if (!seen.has(nb)) {
-          seen.add(nb)
-          stack.push(nb)
-        }
-      }
-    }
-    components.push(comp)
-  }
-  components.sort((a, b) => b.length - a.length)
-
-  // --- 2. 每个分量内部按依赖分层（左→右），同层分支才纵向堆叠 ---
-  const blocks = components.map((comp) => {
-    const ids = new Set(comp.map((n) => n.id))
-    const compEdges = edges.filter((e) => ids.has(e.from) && ids.has(e.to))
-    const layer = layerOf(comp, compEdges)
-
-    const byLayer = new Map()
-    for (const n of comp) {
-      const l = layer.get(n.id) || 0
-      if (!byLayer.has(l)) byLayer.set(l, [])
-      byLayer.get(l).push(n)
-    }
-
-    const columns = []
-    for (const [, list] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
-      list.sort((a, b) => a.name.localeCompare(b.name))
-      for (let k = 0; k < list.length; k += MAX_PER_COLUMN) {
-        columns.push(list.slice(k, k + MAX_PER_COLUMN))
-      }
-    }
-
-    const rows = Math.max(1, ...columns.map((col) => col.length))
+  return nodes.map((node) => {
+    const p = layout.pos.get(node.id) || { x: 0, y: 0 }
     return {
-      columns,
-      width: Math.max(1, columns.length) * (CARD_W + GAP_X) - GAP_X,
-      height: rows * CARD_H + (rows - 1) * GAP_Y,
+      node,
+      x: p.x,
+      y: p.y,
+      lines: wrapText(node.desc, 23).slice(0, MAX_DESC_LINES),
     }
   })
+})
 
-  // --- 3. 分量横排填满宽度，放不下再换行 ---
-  const maxRowWidth = Math.max(CARD_W * 2, viewport.w - 96)
-  const result = []
-  let cursorX = 0
-  let cursorY = 0
-  let rowHeight = 0
+/** 把 dagre 的折线点转成带圆角的 path */
+function roundedPath(points, radius = 12) {
+  if (!points || points.length < 2) return ''
+  let d = `M ${points[0].x} ${points[0].y}`
 
-  for (const block of blocks) {
-    if (cursorX > 0 && cursorX + block.width > maxRowWidth) {
-      cursorX = 0
-      cursorY += rowHeight + GAP_Y
-      rowHeight = 0
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1]
+    const cur = points[i]
+    const next = points[i + 1]
+    const v1x = cur.x - prev.x
+    const v1y = cur.y - prev.y
+    const v2x = next.x - cur.x
+    const v2y = next.y - cur.y
+    const l1 = Math.hypot(v1x, v1y)
+    const l2 = Math.hypot(v2x, v2y)
+
+    if (l1 < 1 || l2 < 1) {
+      d += ` L ${cur.x} ${cur.y}`
+      continue
     }
 
-    block.columns.forEach((col, ci) => {
-      col.forEach((node, ri) => {
-        result.push({
-          node,
-          x: cursorX + ci * (CARD_W + GAP_X),
-          y: cursorY + (ri - (col.length - 1) / 2) * (CARD_H + GAP_Y) + block.height / 2,
-          lines: wrapText(node.desc, 23).slice(0, MAX_DESC_LINES),
-        })
-      })
-    })
-
-    cursorX += block.width + COMPONENT_GAP
-    rowHeight = Math.max(rowHeight, block.height)
+    const r = Math.min(radius, l1 / 2, l2 / 2)
+    const p1x = cur.x - (v1x / l1) * r
+    const p1y = cur.y - (v1y / l1) * r
+    const p2x = cur.x + (v2x / l2) * r
+    const p2y = cur.y + (v2y / l2) * r
+    d += ` L ${p1x} ${p1y} Q ${cur.x} ${cur.y} ${p2x} ${p2y}`
   }
 
-  return result
-})
+  const last = points[points.length - 1]
+  d += ` L ${last.x} ${last.y}`
+  return d
+}
 const boxById = computed(() => {
   const m = new Map()
   for (const p of placed.value) m.set(p.node.id, p)
@@ -1173,7 +1202,11 @@ function fitView() {
   const b = contentBounds.value
   if (!b.w || !b.h) return
   const pad = 28
-  const k = Math.min(MAX_FIT, Math.min((viewport.w - pad * 2) / b.w, (viewport.h - pad * 2) / b.h))
+  // 右下角有统计浮层，右侧多留一点，避免卡片被压住
+  const k = Math.min(
+    MAX_FIT,
+    Math.min((viewport.w - pad * 2 - 150) / b.w, (viewport.h - pad * 2) / b.h),
+  )
   centerAt(Math.min(MAX_FIT, Math.max(MIN_FIT, k)))
   userAdjusted = false
 }
@@ -1234,8 +1267,30 @@ function routeEdge(a, b, slot = 0) {
 
 const routed = computed(() => {
   const out = []
-  const slots = new Map()
   const edges = canvasEdges.value
+  const layout = dagreLayout.value
+
+  // 一/二级：直接用 dagre 给的路由点，拐角做圆角
+  if (layout) {
+    for (const [key, e] of layout.keyOf) {
+      const points = layout.paths.get(key)
+      if (!points) continue
+      const d = roundedPath(points)
+      if (!d) continue
+      const mid = points[Math.floor((points.length - 1) / 2)]
+      out.push({
+        key: `${e.from}->${e.to}#${key}`,
+        edge: e,
+        d,
+        lx: mid.x,
+        ly: mid.y - 6,
+      })
+    }
+    return out
+  }
+
+  // 三级：横向一排，用简单的水平折线
+  const slots = new Map()
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i]
     const a = boxById.value.get(e.from)
