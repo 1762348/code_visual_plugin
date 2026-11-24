@@ -79,8 +79,8 @@
             viewBox="0 0 10 10"
             refX="9"
             refY="5"
-            markerWidth="5"
-            markerHeight="5"
+            markerWidth="7"
+            markerHeight="7"
             orient="auto-start-reverse"
           >
             <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
@@ -966,10 +966,11 @@ const dagreLayout = computed(() => {
   const g = new dagre.graphlib.Graph({ multigraph: true })
   g.setGraph({
     rankdir: 'LR',
-    nodesep: 34,
-    ranksep: 110,
-    marginx: 24,
-    marginy: 24,
+    nodesep: 24,
+    ranksep: 72,
+    ranker: 'tight-tree',
+    marginx: 16,
+    marginy: 16,
   })
   g.setDefaultEdgeLabel(() => ({}))
 
@@ -1178,6 +1179,18 @@ const contentBounds = computed(() => {
     maxX = Math.max(maxX, p.x + CARD_W)
     maxY = Math.max(maxY, p.y + CARD_H)
   }
+
+  // 连线会绕到卡片外侧，只按卡片算边界会把线裁掉
+  for (const e of routed.value) {
+    if (!e.points) continue
+    for (const pt of e.points) {
+      minX = Math.min(minX, pt.x - 6)
+      minY = Math.min(minY, pt.y - 6)
+      maxX = Math.max(maxX, pt.x + 6)
+      maxY = Math.max(maxY, pt.y + 6)
+    }
+  }
+
   return { minX, minY, w: maxX - minX, h: maxY - minY }
 })
 
@@ -1282,6 +1295,7 @@ const routed = computed(() => {
         key: `${e.from}->${e.to}#${key}`,
         edge: e,
         d,
+        points,
         lx: mid.x,
         ly: mid.y - 6,
       })
@@ -1948,31 +1962,45 @@ onBeforeUnmount(() => {
   font-family: Consolas, monospace;
 }
 
+/* ---------------- 滚动条（JCEF 默认宽度为 0，必须显式指定） ---------------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.03); border-radius: 6px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(79, 191, 176, 0.45);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(79, 191, 176, 0.7); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
 /* ---------------- 连线 ---------------- */
 .edge {
-  stroke: #294744;
-  color: #2f6f69;
-  stroke-width: 1.1;
-  opacity: 0.5;
+  stroke: #3d6f6a;
+  color: #3d6f6a;
+  stroke-width: 1.9;
+  opacity: 0.85;
   fill: none;
+  stroke-linecap: round;
   transition: opacity 0.15s, stroke-width 0.15s;
 }
 
 /* color 同时决定箭头颜色（marker 用 currentColor） */
 .edge-contain {
-  stroke: #3f6b66;
-  color: #3f6b66;
-  stroke-dasharray: 1 3;
-  opacity: 0.5;
+  stroke: #4f7f79;
+  color: #4f7f79;
+  stroke-width: 1.7;
+  stroke-dasharray: 5 4;
+  opacity: 0.7;
 }
 
 .edge-extends { stroke: #e8a33d; color: #e8a33d; }
-.edge-implements { stroke: #8f7de0; color: #8f7de0; stroke-dasharray: 5 3; }
-.edge-uses { stroke: #2f6f69; color: #2f6f69; stroke-dasharray: 2 3; }
+.edge-implements { stroke: #a292ec; color: #a292ec; stroke-dasharray: 8 4; }
+.edge-uses { stroke: #4fbfb0; color: #4fbfb0; stroke-dasharray: none; }
 
 .edge.active {
   opacity: 1;
-  stroke-width: 2;
+  stroke-width: 3;
 }
 
 /* 标签默认隐藏，只在悬停/选中相关边时出现，避免糊成一片 */
@@ -2286,8 +2314,8 @@ onBeforeUnmount(() => {
 
 .lg-extends { border-top: 1.6px solid #e8a33d; }
 .lg-implements { border-top: 1.6px dashed #8f7de0; }
-.lg-uses { border-top: 1.6px dotted #2f6f69; }
-.lg-contain { border-top: 1.6px dotted #3f6b66; }
+.lg-uses { border-top: 2px solid #4fbfb0; }
+.lg-contain { border-top: 2px dashed #4f7f79; }
 
 .count {
   margin-left: auto;
@@ -2339,9 +2367,12 @@ onBeforeUnmount(() => {
 
 /* ---------------- 底部详情面板 ---------------- */
 .detail-panel {
-  flex-shrink: 0;
-  max-height: 46%;
-  overflow: hidden;
+  /* 可收缩：flex-shrink:0 时内容超长会把面板顶出容器，容器又 overflow:hidden，
+     结果就是"看不全也没有滚动条" */
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 62%;
+  overflow-y: auto;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -2544,22 +2575,19 @@ onBeforeUnmount(() => {
 /* ---------------- 逐行解释 ---------------- */
 .explain-wrap {
   flex: 1 1 100%;
-  align-self: stretch;      /* 关键：flex-start 下不会撑满，列表就滚不动 */
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .line-list {
   margin: 6px 0 0;
   padding: 0 4px 0 0;
   list-style: none;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  flex: 1;
-  min-height: 0;
 }
 
 .line-list li {
