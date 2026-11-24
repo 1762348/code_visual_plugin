@@ -56,3 +56,6 @@ frontend/dist/
 *.log
 *.hprof
 *.hprof.*
+
+# IDE 私有配置（.run 下的运行配置仍然保留）
+.idea/
