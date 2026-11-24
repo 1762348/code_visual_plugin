@@ -37,7 +37,7 @@ CodeCanvas 把它压缩成一张图：**一张卡片 = 一个目录**，卡片�
 
 ## 安装
 
-1. 到 Releases 页面下载最新 `CodeCanvas-*.zip`
+1. 到 [Releases](https://github.com/1762348/code_visual_plugin/releases) 下载最新 `CodeCanvas-*.zip`
 2. IDEA → `Settings → Plugins → ⚙ → Install Plugin from Disk...`
 3. 选择刚下载的 zip，重启 IDE
 4. 右侧边栏出现 **CodeCanvas** 工具窗
