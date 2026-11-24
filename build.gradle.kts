@@ -26,6 +26,7 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("com.github.javaparser:javaparser-symbol-solver-core:3.26.0")
     implementation("com.github.javaparser:javaparser-core:3.26.0")
+    testImplementation("junit:junit:4.13.2")
 }
 
 // 固定 17：Kotlin 2.0.0 无法在 JDK 25 上编译（IllegalArgumentException: 25.0.2）

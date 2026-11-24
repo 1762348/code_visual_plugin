@@ -7,6 +7,7 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import java.io.File
 
 /**
  * 行级修改 + 版本回滚。
@@ -32,12 +33,24 @@ object EditService {
 
     private const val MAX_VERSIONS = 3
 
-    /** filePath -> 历史快照（最新在最后） */
-    private val history = HashMap<String, ArrayDeque<String>>()
+    /** 快照落盘目录：<项目>/.idea/codecanvas/edits/<hash>-<文件名>/snap-<时间戳>.txt */
+    private fun snapshotDir(project: Project, file: VirtualFile): File? {
+        val base = project.basePath ?: return null
+        val key = Integer.toHexString(file.path.hashCode()) + "-" + file.name
+        val dir = File(base, ".idea/codecanvas/edits/$key")
+        return if (dir.exists() || dir.mkdirs()) dir else null
+    }
 
-    fun versionCount(moduleId: String, fileName: String): Int {
+    private fun snapshots(project: Project, file: VirtualFile): List<File> {
+        val dir = snapshotDir(project, file) ?: return emptyList()
+        val list = dir.listFiles { f -> f.isFile && f.name.startsWith("snap-") } ?: return emptyList()
+        return list.sortedByDescending { it.name }
+    }
+
+    fun versionCount(project: Project?, moduleId: String, fileName: String): Int {
+        if (project == null) return 0
         val file = findFile(moduleId, fileName) ?: return 0
-        return synchronized(history) { history[file.path]?.size ?: 0 }
+        return snapshots(project, file).size
     }
 
     /**
@@ -80,7 +93,7 @@ object EditService {
                     }
 
                     if (failure == null) {
-                        pushHistory(file, snapshot)
+                        pushSnapshot(project, file, snapshot)
                         manager.saveDocument(document)
                     }
                 } catch (e: Throwable) {
@@ -90,11 +103,11 @@ object EditService {
         }
 
         failure?.let { return EditResult(success = false, message = it) }
-        if (changed == 0) return EditResult(success = true, message = "内容没有变化", versions = versionCount(moduleId, fileName))
+        if (changed == 0) return EditResult(success = true, message = "内容没有变化", versions = versionCount(project, moduleId, fileName))
         return EditResult(
             success = true,
             message = "已修改 $changed 行",
-            versions = versionCount(moduleId, fileName),
+            versions = versionCount(project, moduleId, fileName),
             changed = changed
         )
     }
@@ -108,11 +121,8 @@ object EditService {
         val document = documentOf(file)
             ?: return EditResult(success = false, message = "拿不到文档")
 
-        val snapshot = synchronized(history) {
-            val stack = history[file.path] ?: return EditResult(success = false, message = "没有可回滚的版本")
-            if (stack.isEmpty()) return EditResult(success = false, message = "没有可回滚的版本")
-            stack.removeLast()
-        }
+        val snapshot = popSnapshot(project, file)
+            ?: return EditResult(success = false, message = "没有可回滚的版本")
 
         var failure: String? = null
         ApplicationManager.getApplication().invokeAndWait {
@@ -130,7 +140,7 @@ object EditService {
         return EditResult(
             success = true,
             message = "已回滚",
-            versions = synchronized(history) { history[file.path]?.size ?: 0 }
+            versions = versionCount(project, moduleId, fileName)
         )
     }
 
@@ -146,11 +156,28 @@ object EditService {
             ModuleFileIndex.filesOf(moduleId).firstOrNull { it.name == fileName }
         }
 
-    private fun pushHistory(file: VirtualFile, snapshot: String) {
-        synchronized(history) {
-            val stack = history.getOrPut(file.path) { ArrayDeque() }
-            stack.addLast(snapshot)
-            while (stack.size > MAX_VERSIONS) stack.removeFirst()
+    /** 改动前把整份文本写一份快照，最多保留 MAX_VERSIONS 份 */
+    private fun pushSnapshot(project: Project, file: VirtualFile, snapshot: String) {
+        val dir = snapshotDir(project, file) ?: return
+        try {
+            val name = "snap-" + System.currentTimeMillis() + ".txt"
+            File(dir, name).writeText(snapshot, Charsets.UTF_8)
+            // 只留最近 N 份
+            snapshots(project, file).drop(MAX_VERSIONS).forEach { it.delete() }
+        } catch (e: Throwable) {
+            // 快照失败不影响写入本身
+        }
+    }
+
+    /** 取最近一份快照并删除（回滚一步） */
+    private fun popSnapshot(project: Project, file: VirtualFile): String? {
+        val newest = snapshots(project, file).firstOrNull() ?: return null
+        return try {
+            val text = newest.readText(Charsets.UTF_8)
+            newest.delete()
+            text
+        } catch (e: Throwable) {
+            null
         }
     }
 }

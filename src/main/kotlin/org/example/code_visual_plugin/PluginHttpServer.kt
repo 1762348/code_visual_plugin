@@ -170,6 +170,7 @@ object PluginHttpServer {
                         EditResult(
                             success = true,
                             versions = EditService.versionCount(
+                                project,
                                 queryParam(query, "moduleId").orEmpty(),
                                 queryParam(query, "file").orEmpty()
                             )

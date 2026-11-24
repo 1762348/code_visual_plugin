@@ -49,15 +49,22 @@
       <p class="tip">首次扫描需要几百毫秒到几秒，取决于项目大小</p>
     </div>
 
-    <div v-else-if="error" class="error-box">
+    <div v-else-if="error && !modules.length" class="error-box">
       <p class="error-title">无法获取包结构</p>
       <p class="error-msg">{{ error }}</p>
       <button class="ghost-btn" @click="fetchData">重试</button>
     </div>
 
     <div v-else-if="!modules.length" class="empty">
-      <p class="empty-main">没有可显示的包</p>
-      <p class="tip">当前项目里没有 .java 源文件？</p>
+      <p class="empty-main">没有可显示的模块</p>
+      <p class="tip">{{ notice || '当前项目里没有扫描到可识别的源码文件' }}</p>
+      <p class="tip dim">支持 Java / Kotlin / JavaScript / TypeScript / Vue / Python / Go / Rust / C / C++</p>
+    </div>
+
+    <!-- 部分结果：扫描出错但已经有模块，保留图并把错误显示在顶部 -->
+    <div v-if="error && modules.length" class="notice-bar">
+      <span class="notice-icon">!</span>
+      <span class="notice-text">{{ error }}</span>
     </div>
 
     <div v-else class="stage" :class="{ focused: !!selected }">
@@ -875,7 +882,12 @@ function applyExplain(status) {
   explainPhase.value = status.phase || 'idle'
   explainError.value = status.error || ''
   explainMessage.value = status.message || ''
-  if (status.result) explainResult.value = status.result
+  if (status.result) {
+    // 解释过程中切换了文件时，结果可能属于上一个文件
+    const current = selectedFile.value
+    if (current && status.result.file && status.result.file !== current.name) return
+    explainResult.value = status.result
+  }
 }
 
 async function explainFile() {
@@ -1331,16 +1343,22 @@ const contentBounds = computed(() => {
 const viewBox = computed(() => `0 0 ${viewport.w} ${viewport.h}`)
 
 /** 把内容居中显示在给定缩放比下 */
+function overlayRight() {
+  return fileView.value ? 0 : 168
+}
+
 function centerAt(k) {
   const b = contentBounds.value
   if (!b.w || !b.h) return
   view.k = k
-  view.x = (viewport.w - b.w * k) / 2 - b.minX * k
+  // 右下角统计浮层会压住卡片，居中时避开它的宽度
+  const availW = Math.max(220, viewport.w - overlayRight())
+  view.x = (availW - b.w * k) / 2 - b.minX * k
   view.y = (viewport.h - b.h * k) / 2 - b.minY * k
 }
 
-/** 适应窗口，但不会缩到读不清的程度（再小就靠用户自己缩） */
-const MIN_FIT = 0.7
+/** 自适应下限：窄窗口也要能装下整张图（一级不能拖动，裁掉就找不回来了） */
+const MIN_FIT = 0.25
 
 /** 内容少时最多放大到 1.35 倍，尽量填满画布 */
 const MAX_FIT = 1.35
@@ -1349,10 +1367,10 @@ function fitView() {
   const b = contentBounds.value
   if (!b.w || !b.h) return
   const pad = 28
-  // 右下角有统计浮层，右侧多留一点，避免卡片被压住
+  const availW = Math.max(220, viewport.w - overlayRight())
   const k = Math.min(
     MAX_FIT,
-    Math.min((viewport.w - pad * 2 - 150) / b.w, (viewport.h - pad * 2) / b.h),
+    Math.min((availW - pad * 2) / b.w, (viewport.h - pad * 2) / b.h),
   )
   centerAt(Math.min(MAX_FIT, Math.max(MIN_FIT, k)))
   userAdjusted = false
@@ -1670,8 +1688,16 @@ async function fetchData(force = false) {
     const data = await res.json()
     if (!data.success) {
       error.value = data.message || data.msg || '服务返回失败'
-      modules.value = []
-      relations.value = []
+      // 部分结果也保留：扫到多少先画多少，错误在顶部提示
+      if (Array.isArray(data.nodes) && data.nodes.length) {
+        modules.value = data.nodes
+        relations.value = data.edges || []
+        stats.value = data.stats || stats.value
+        projectName.value = data.projectName || projectName.value
+      } else {
+        modules.value = []
+        relations.value = []
+      }
       notice.value = ''
       return
     }
@@ -2173,6 +2199,21 @@ onBeforeUnmount(() => {
 .line-list li.fixed { background: rgba(53, 224, 200, 0.06); }
 .line-list li.fixed .lc { color: #7ff0dd; }
 
+/* 窄宽度下详情面板改单列：flex-wrap 分行时行高由最高的块决定，会留大段空档 */
+@media (max-width: 820px) {
+  .detail-panel {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .dp-main,
+  .dp-block {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+}
+
 /* ---------------- 滚动条（JCEF 默认宽度为 0，必须显式指定） ---------------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.03); border-radius: 6px; }
@@ -2578,15 +2619,16 @@ onBeforeUnmount(() => {
 
 /* ---------------- 底部详情面板 ---------------- */
 .detail-panel {
-  /* 可收缩：flex-shrink:0 时内容超长会把面板顶出容器，容器又 overflow:hidden，
-     结果就是"看不全也没有滚动条" */
+  /* 用 grid 而不是 flex-wrap：flex 分行时多余高度会被摊到每一行，
+     表现为各区块之间隔着几百像素空白 */
   flex: 0 1 auto;
   min-height: 0;
   max-height: 62%;
   overflow-y: auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  align-content: start;
+  align-items: start;
   gap: 14px 26px;
   padding: 14px 18px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
